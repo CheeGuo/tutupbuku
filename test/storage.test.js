@@ -44,12 +44,12 @@ test('local store persists scoped proposals, uploaded bytes, and human audit dec
   assert.ok(events.some((event) => event.type === 'issue_resolved'));
 });
 
-test('local user maps to a stable personal business without adding sample transactions', async (t) => {
+test('demo workspace is stable without a user identity or sample transactions', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tutupbuku-business-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const store = new LocalStore({ dataDir });
-  const first = await store.resolveBusiness({ userId: 'user-1', email: 'owner@example.test' });
-  const again = await store.resolveBusiness({ userId: 'user-1', email: 'owner@example.test' });
+  const first = await store.resolveDemoBusiness('00000000-0000-4000-8000-000000000001');
+  const again = await store.resolveDemoBusiness('00000000-0000-4000-8000-000000000001');
   assert.equal(first.businessId, again.businessId);
   assert.deepEqual(await store.listDocuments(first.businessId), []);
 });
@@ -69,10 +69,26 @@ test('job leases prevent duplicate workers and allow recovery after lease expiry
   const store = new LocalStore({ dataDir });
   await store.createDocument({ id: 'doc-lease', businessId: 'business-1', status: 'queued' });
   await store.createJob({ id: 'job-lease', businessId: 'business-1', documentId: 'doc-lease', status: 'queued' });
-  assert.equal(await store.claimJob('business-1', 'job-lease', 'worker-1', { leaseMs: 15 }), true);
+  assert.equal(await store.claimJob('business-1', 'job-lease', 'worker-1', { leaseMs: 30000 }), true);
   assert.equal(await store.claimJob('business-1', 'job-lease', 'worker-2'), false);
-  await new Promise((resolve) => setTimeout(resolve, 25));
+  await store.mutate((state) => { state.jobs['job-lease'].leaseUntil = new Date(Date.now() - 1000).toISOString(); });
   assert.equal(await store.claimJob('business-1', 'job-lease', 'worker-2'), true);
+});
+
+test('Windows sharing conflicts do not lose a saved accounting change', { skip: process.platform !== 'win32' }, async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tutupbuku-sharing-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const store = new LocalStore({ dataDir });
+  await store.init();
+  const rename = fs.rename;
+  let blocked = true;
+  fs.rename = async (...args) => {
+    if (blocked) { blocked = false; throw Object.assign(new Error('Windows sharing conflict'), { code: 'EPERM' }); }
+    return rename(...args);
+  };
+  t.after(() => { fs.rename = rename; });
+  await store.createDocument({ id: 'saved-document', businessId: 'business-1', originalFilename: 'receipt.csv' });
+  assert.equal((await store.getDocument('business-1', 'saved-document')).originalFilename, 'receipt.csv');
 });
 
 test('proposal persistence serializes concurrent invoice writes against one PO balance', async (t) => {

@@ -3,13 +3,8 @@
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const accessView = $('#accessView');
-  const appView = $('#appView');
   const config = { aiConfigured: false, maxUploadBytes: 15 * 1024 * 1024 };
-  const state = { documents: [], issues: [], jobs: [], masterData: { chartOfAccounts: [], suppliers: [], buyerProfile: null }, selectedFiles: [], refreshVersion: 0, correctionDocument: null, role: 'owner' };
-  const tokenKey = 'tutupbuku.access-token';
-  const emailKey = 'tutupbuku.signed-in-email';
-  let accessToken = sessionStorage.getItem(tokenKey) || '';
+  const state = { documents: [], issues: [], jobs: [], masterData: { chartOfAccounts: [], suppliers: [], buyerProfile: null }, selectedFiles: [], refreshVersion: 0, correctionDocument: null, recordsLoaded: false, issuesLoaded: false, jobsLoaded: false, loadError: '' };
   let toastTimer;
 
   async function fetchConfig() {
@@ -45,19 +40,6 @@
     notice.hidden = false;
   }
 
-  function clearNotice() { $('#globalNotice').hidden = true; }
-
-  function applyRole(role) {
-    state.role = ['owner', 'reviewer', 'employee'].includes(role) ? role : 'owner';
-    $('#roleLabel').textContent = state.role[0].toUpperCase() + state.role.slice(1);
-    $('#tab-setup').hidden = state.role !== 'owner';
-    const workflow = $('#workflow');
-    workflow.disabled = state.role === 'employee';
-    if (state.role === 'employee') workflow.value = 'claim';
-    workflow.dispatchEvent(new Event('change'));
-    if (state.role !== 'owner' && location.hash === '#setup') setView('upload');
-  }
-
   function showToast(message, tone = 'success') {
     const toast = $('#toast');
     toast.textContent = message;
@@ -67,16 +49,8 @@
     toastTimer = setTimeout(() => { toast.hidden = true; }, 4200);
   }
 
-  function apiHeaders(extra = {}) {
-    return { ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}), ...extra };
-  }
-
   async function api(path, options = {}) {
-    const response = await fetch(path, { ...options, headers: apiHeaders(options.headers || {}) });
-    if (response.status === 401) {
-      expireSession();
-      throw new Error('Your sign-in expired. Sign in again to continue.');
-    }
+    const response = await fetch(path, options);
     if (!response.ok) {
       let message = `Request could not be completed (${response.status}).`;
       try { message = (await response.json()).error || message; } catch {}
@@ -94,29 +68,14 @@
     return response.json();
   }
 
-  function showAccessRequired(message = 'This page requires a previously authenticated session. No sign-in form is available here.') {
-    appView.hidden = true;
-    accessView.hidden = false;
-    $('#accessMessage').textContent = message;
-    document.title = 'TutupBuku';
-  }
-
-  function expireSession() {
-    accessToken = '';
-    sessionStorage.removeItem(tokenKey);
-    sessionStorage.removeItem(emailKey);
-    showAccessRequired('Your session expired. The sign-in form is unavailable on this page.');
-  }
-
-  function startSession(token, email) {
-    accessToken = token;
-    sessionStorage.setItem(tokenKey, token);
-    sessionStorage.setItem(emailKey, email);
-    accessView.hidden = true;
-    appView.hidden = false;
-    $('#signedInEmail').textContent = email;
-    setView(location.hash.slice(1) || 'upload', false);
-    loadWorkspace().catch((error) => showToast(error.message, 'error'));
+  function showWorkspaceError(error) {
+    state.loadError = error.message || 'The backend could not be reached.';
+    $('#connectionLabel').textContent = 'Backend unavailable';
+    $('.connection-dot').className = 'connection-dot warn';
+    showNotice(state.loadError, 'error');
+    if (!state.recordsLoaded) renderRecords();
+    if (!state.issuesLoaded) renderIssues();
+    if (!state.jobsLoaded) renderJobs(state.jobs);
   }
 
   function setView(name, updateUrl = true) {
@@ -149,14 +108,16 @@
   }
 
   async function loadWorkspace() {
-    if (!accessToken) return;
     const version = ++state.refreshVersion;
-    const [documentsResponse, issuesResponse, jobsResponse, masterResponse, sessionResponse] = await Promise.all([
-      api('/api/documents'), api('/api/issues'), api('/api/jobs'), api('/api/master-data'), api('/api/session'),
+    const [documentsResponse, issuesResponse, jobsResponse, masterResponse] = await Promise.all([
+      api('/api/documents'), api('/api/issues'), api('/api/jobs'), api('/api/master-data'),
     ]);
-    const [documents, issues, jobs, masterData, session] = await Promise.all([documentsResponse.json(), issuesResponse.json(), jobsResponse.json(), masterResponse.json(), sessionResponse.json()]);
+    const [documents, issues, jobs, masterData] = await Promise.all([documentsResponse.json(), issuesResponse.json(), jobsResponse.json(), masterResponse.json()]);
     if (version !== state.refreshVersion) return;
-    applyRole(session.role);
+    state.recordsLoaded = true;
+    state.issuesLoaded = true;
+    state.jobsLoaded = true;
+    state.loadError = '';
     state.documents = documents;
     state.issues = issues;
     state.jobs = jobs;
@@ -173,12 +134,16 @@
   async function loadRecordsAndIssues() {
     try {
       const [documentsResponse, issuesResponse] = await Promise.all([api('/api/documents'), api('/api/issues')]);
-      state.documents = await documentsResponse.json();
-      state.issues = await issuesResponse.json();
+      const [documents, issues] = await Promise.all([documentsResponse.json(), issuesResponse.json()]);
+      state.documents = documents;
+      state.issues = issues;
+      state.recordsLoaded = true;
+      state.issuesLoaded = true;
+      state.loadError = '';
       $('#recordTotal').textContent = String(state.documents.length);
       renderRecords();
       renderIssues();
-    } catch (error) { showToast(error.message, 'error'); }
+    } catch (error) { showWorkspaceError(error); showToast(error.message, 'error'); }
   }
 
   function setFieldError(field, target, message) {
@@ -277,6 +242,7 @@
         item.status = 'Saved · checks queued';
         item.busy = false;
         saved += 1;
+        state.jobsLoaded = true;
         state.jobs.unshift({ id: result.job.id, documentId: result.document.id, status: result.job.status, events: [], originalFilename: item.file.name });
         renderJobs(state.jobs);
         watchJob(result.job.id);
@@ -305,6 +271,7 @@
       for (let count = 0; count < 240; count += 1) {
         const response = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
         const job = await response.json();
+        state.jobsLoaded = true;
         const index = state.jobs.findIndex((item) => item.id === job.id);
         if (index >= 0) state.jobs[index] = job; else state.jobs.unshift(job);
         renderJobs(state.jobs);
@@ -334,6 +301,11 @@
   function renderJobs(jobs) {
     const list = $('#jobsList');
     list.replaceChildren();
+    if (!state.jobsLoaded) {
+      const message = document.createElement('p'); message.className = 'empty-inline';
+      message.textContent = state.loadError ? 'Processing status could not be loaded. Connect the backend and refresh.' : 'Loading processing status…';
+      list.append(message); return;
+    }
     if (!jobs.length) { const empty = document.createElement('p'); empty.className = 'empty-inline'; empty.textContent = 'No document checks are running yet. Upload a file to see each processing stage here.'; list.append(empty); return; }
     for (const job of jobs.slice(0, 12)) {
       const card = document.createElement('article'); card.className = 'job-card';
@@ -376,6 +348,13 @@
   function renderRecords() {
     const body = $('#recordsBody');
     body.replaceChildren();
+    if (!state.recordsLoaded) {
+      $('#recordsCount').textContent = state.loadError ? 'Records unavailable' : 'Loading records…';
+      const row = document.createElement('tr'); const cell = document.createElement('td');
+      cell.colSpan = 9; cell.className = 'table-empty';
+      cell.textContent = state.loadError ? 'Records could not be loaded. Connect the backend and refresh.' : 'Loading business records…';
+      row.append(cell); body.append(row); return;
+    }
     $('#recordsCount').textContent = `${state.documents.length} ${state.documents.length === 1 ? 'record' : 'records'}`;
     if (!state.documents.length) {
       const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 8; cell.className = 'table-empty'; cell.textContent = 'No records yet. Upload a purchasing file or employee claim to start a document trail.'; row.append(cell); body.append(row); return;
@@ -399,7 +378,7 @@
         const correct = document.createElement('button'); correct.type = 'button'; correct.className = 'table-action'; correct.textContent = 'Correct'; correct.setAttribute('aria-label', `Correct extracted information for ${documentRecord.originalFilename}`); correct.addEventListener('click', () => openCorrection(documentRecord)); actions.append(correct);
         const recheck = document.createElement('button'); recheck.type = 'button'; recheck.className = 'table-action'; recheck.textContent = 'Recheck'; recheck.setAttribute('aria-label', `Recheck ${documentRecord.originalFilename}`); recheck.addEventListener('click', () => reprocessDocument(documentRecord.id, recheck)); actions.append(recheck);
         const unresolved = state.issues.some((issue) => issue.documentId === documentRecord.id && issue.status !== 'resolved');
-        if (state.role !== 'employee' && !unresolved && ['completed','needs_review'].includes(documentRecord.status)) {
+        if (!unresolved && ['completed','needs_review'].includes(documentRecord.status)) {
           const approve = document.createElement('button'); approve.type = 'button'; approve.className = 'table-action'; approve.textContent = 'Approve'; approve.setAttribute('aria-label', `Approve ${documentRecord.originalFilename}`); approve.addEventListener('click', () => approveDocument(documentRecord.id, approve)); actions.append(approve);
         }
       }
@@ -424,6 +403,13 @@
 
   function renderIssues() {
     const list = $('#issuesList');
+    if (!state.issuesLoaded) {
+      $('#issuesCount').textContent = state.loadError ? 'Issues unavailable' : 'Loading issues…';
+      list.replaceChildren();
+      const message = document.createElement('p'); message.className = 'empty-inline';
+      message.textContent = state.loadError ? 'Issues could not be loaded. Connect the backend and refresh.' : 'Loading business issues…';
+      list.append(message); return;
+    }
     const filter = $('#issueFilter').value;
     const openCount = state.issues.filter((issue) => issue.status !== 'resolved').length;
     $('#issueCount').textContent = String(openCount);
@@ -462,8 +448,6 @@
       }
       if (issue.status === 'resolved') {
         const resolution = document.createElement('p'); resolution.className = 'job-summary'; resolution.textContent = `Resolved by ${issue.resolvedBy || 'reviewer'}: ${issue.resolutionReason || 'No reason recorded.'}`; card.append(resolution);
-      } else if (state.role === 'employee') {
-        const waiting = document.createElement('p'); waiting.className = 'job-summary'; waiting.textContent = 'This item is waiting for a reviewer to resolve it.'; card.append(waiting);
       } else {
         const form = document.createElement('form'); form.className = 'resolution-form'; form.noValidate = true;
         const group = document.createElement('div'); group.className = 'field-group'; const label = document.createElement('label'); label.textContent = 'Resolution note';
@@ -589,7 +573,6 @@
 
   async function handleExport(event) { await downloadCsv(event.currentTarget.dataset.kind || (event.currentTarget.id === 'exportIssues' ? 'issues' : 'records')); }
 
-  $('#signOut').addEventListener('click', () => { accessToken = ''; sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(emailKey); showAccessRequired('You have signed out. The sign-in form is unavailable on this page.'); });
   $$('[role="tab"]').forEach((tab) => { tab.addEventListener('click', () => setView(tab.dataset.view)); tab.addEventListener('keydown', tabKeydown); });
   $$('[data-go]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); setView(link.dataset.go); }));
   window.addEventListener('hashchange', () => setView(location.hash.slice(1), false));
@@ -599,7 +582,7 @@
     const claims = workflow === 'claim'; const automatic = workflow === 'auto';
     $('#purposeGroup').hidden = !claims && !automatic;
     $('#purposeGroup label').textContent = automatic ? 'Claim purpose (if this upload is an employee expense)' : "Employee's stated purpose";
-    $('#claimPurpose').required = claims || state.role === 'employee';
+    $('#claimPurpose').required = claims;
     $('#purposeHelp').textContent = automatic
       ? 'Optional during upload. If Master Agent routes this to claims without a purpose, it will be flagged for follow-up.'
       : 'Write the actual reason. The system will compare it with the receipt contents.';
@@ -612,7 +595,7 @@
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragging'));
   dropZone.addEventListener('drop', (event) => { event.preventDefault(); dropZone.classList.remove('dragging'); addFiles(event.dataTransfer.files); });
   $('#uploadForm').addEventListener('submit', uploadSelected);
-  $('#refreshJobs').addEventListener('click', () => loadWorkspace().catch((error) => showToast(error.message, 'error')));
+  $('#refreshJobs').addEventListener('click', () => loadWorkspace().catch((error) => { showWorkspaceError(error); showToast(error.message, 'error'); }));
   $('#reloadRecords').addEventListener('click', () => loadRecordsAndIssues());
   $('#exportRecords').addEventListener('click', handleExport);
   $('#exportIssues').addEventListener('click', handleExport);
@@ -629,16 +612,10 @@
   });
   $('#footerYear').textContent = String(new Date().getFullYear());
 
-  fetchConfig().then(() => {
-    if (accessToken) {
-      accessView.hidden = true; appView.hidden = false;
-      $('#signedInEmail').textContent = sessionStorage.getItem(emailKey) || 'Signed-in user';
-      setView(location.hash.slice(1) || 'upload', false);
-      loadWorkspace().catch((error) => showToast(error.message, 'error'));
-    } else showAccessRequired();
-    const navigation = matchMedia('(max-width: 720px)');
-    const updateNavigationOrientation = () => $('.main-nav').setAttribute('aria-orientation', navigation.matches ? 'horizontal' : 'vertical');
-    updateNavigationOrientation();
-    navigation.addEventListener?.('change', updateNavigationOrientation);
-  });
+  setView(location.hash.slice(1) || 'upload', false);
+  const navigation = matchMedia('(max-width: 720px)');
+  const updateNavigationOrientation = () => $('.main-nav').setAttribute('aria-orientation', navigation.matches ? 'horizontal' : 'vertical');
+  updateNavigationOrientation();
+  navigation.addEventListener?.('change', updateNavigationOrientation);
+  fetchConfig().then(loadWorkspace).catch(showWorkspaceError);
 })();

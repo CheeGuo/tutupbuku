@@ -1,7 +1,7 @@
 const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { createHash, randomUUID, timingSafeEqual } = require('node:crypto');
+const { randomUUID } = require('node:crypto');
 const { createCodeBuddyClient } = require('./codebuddy-client');
 
 const SECURITY_HEADERS = {
@@ -19,10 +19,6 @@ function send(response, status, body) {
   response.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(body));
 }
-function constantEqual(a, b) {
-  const digest = (value) => createHash('sha256').update(value).digest();
-  return timingSafeEqual(digest(a), digest(b));
-}
 async function emptyBody(request) {
   const chunks = [];
   let length = 0;
@@ -39,13 +35,6 @@ async function emptyBody(request) {
 }
 
 function createAgentDemo({ env = process.env, fetchImpl = globalThis.fetch, timeoutMs, maxRuns = 20, scheduleRun = setImmediate } = {}) {
-  const operatorPassword = String(env.AGENT_DEMO_PASSWORD || '');
-  if (operatorPassword.length < 16 || operatorPassword === String(env.CODEBUDDY_GATEWAY_PASSWORD || '')) {
-    throw new Error('Set AGENT_DEMO_PASSWORD to a separate operator password of at least 16 characters.');
-  }
-  const user = String(env.AGENT_DEMO_USER || 'demo');
-  if (!/^[a-zA-Z0-9_-]{1,64}$/u.test(user)) throw new Error('AGENT_DEMO_USER must be a simple username.');
-  const expectedAuth = `Basic ${Buffer.from(`${user}:${operatorPassword}`).toString('base64')}`;
   const client = createCodeBuddyClient({ env, fetchImpl, timeoutMs });
   const instanceId = randomUUID();
   const jobs = new Map();
@@ -98,10 +87,6 @@ function createAgentDemo({ env = process.env, fetchImpl = globalThis.fetch, time
   }
   const server = http.createServer(async (request, response) => {
     try {
-      if (!constantEqual(String(request.headers.authorization || ''), expectedAuth)) {
-        response.writeHead(401, { ...SECURITY_HEADERS, 'www-authenticate': 'Basic realm="TutupBuku agent test", charset="UTF-8"', 'content-type': 'application/json' });
-        return response.end(JSON.stringify({ error: 'Sign in with the operator demo credentials.' }));
-      }
       const url = new URL(request.url, 'http://localhost');
       if (request.method === 'GET' && ASSETS.has(url.pathname)) {
         const [filename, type] = ASSETS.get(url.pathname);
@@ -171,7 +156,7 @@ if (require.main === module) {
     const demo = createAgentDemo();
     demo.listen().then(() => {
       console.log(`TutupBuku agent test: http://${process.env.AGENT_DEMO_HOST || '127.0.0.1'}:${demo.server.address().port}`);
-      console.log('Use the separate operator demo login. The CodeBuddy password stays on the backend.');
+      console.log('Open the page directly. The CodeBuddy gateway password stays on the backend.');
       for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => demo.close().then(() => process.exit(0)));
     }).catch((error) => { console.error(`Agent test startup failed: ${error.message}`); process.exitCode = 1; });
   } catch (error) { console.error(`Agent test startup failed: ${error.message}`); process.exitCode = 1; }

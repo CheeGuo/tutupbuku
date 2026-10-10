@@ -17,7 +17,6 @@
     refreshing: false,
     lookupFailed: false,
     uncertain: false,
-    blocked: false,
     job: null,
     jobId: null,
     pendingKey: null,
@@ -68,12 +67,12 @@
   function render() {
     const active = activeStates.has(state.job?.status) || Boolean(state.jobId && !state.job);
     const busy = state.submitting || state.refreshing || state.checking;
-    elements.runTest.disabled = busy || active || state.uncertain || state.lookupFailed || state.blocked || !state.configured;
+    elements.runTest.disabled = busy || active || state.uncertain || state.lookupFailed || !state.configured;
     elements.runTest.setAttribute('aria-busy', String(state.submitting));
-    elements.refreshStatus.hidden = !(state.lookupFailed || state.uncertain || state.blocked || !state.configured && !state.checking);
+    elements.refreshStatus.hidden = !(state.lookupFailed || state.uncertain || !state.configured && !state.checking);
     elements.refreshStatus.disabled = busy;
     elements.refreshStatus.setAttribute('aria-busy', String(state.refreshing));
-    elements.retryRequest.hidden = !(state.uncertain && state.pendingKey && state.configured && !state.blocked);
+    elements.retryRequest.hidden = !(state.uncertain && state.pendingKey && state.configured);
     elements.retryRequest.disabled = busy;
     elements.recoveryNote.hidden = elements.retryRequest.hidden;
     elements.statusText.textContent = state.statusText;
@@ -87,7 +86,6 @@
     else if (state.submitting) badge = 'Sending';
     else if (state.uncertain) badge = 'Status unknown';
     else if (state.lookupFailed) badge = 'Status unavailable';
-    else if (state.blocked) { badge = 'Access required'; tone = 'error'; }
     else if (state.job?.status === 'completed') { badge = 'Completed'; tone = 'success'; }
     else if (state.job?.status === 'failed') { badge = 'Failed'; tone = 'failed'; }
     else if (state.job?.status === 'running') badge = 'Running';
@@ -157,7 +155,6 @@
     state.pendingKey = null;
     state.uncertain = false;
     state.lookupFailed = false;
-    state.blocked = false;
     saveReference();
     stopPolling();
     if (job.status === 'queued') state.statusText = 'The backend accepted the request. Waiting for the AWS agent.';
@@ -171,14 +168,6 @@
     }
     if (activeStates.has(job.status)) state.timer = setTimeout(pollJob, pollIntervalMs);
     render();
-  }
-
-  function handleAccess(error) {
-    if (error.status !== 401) return false;
-    state.blocked = true;
-    state.statusText = 'Your access could not be verified.';
-    setNotice('Reload this page and sign in again. The existing request will not be restarted automatically.', true);
-    return true;
   }
 
   async function pollJob() {
@@ -203,10 +192,8 @@
         setNotice('The backend may have restarted. No new AI request was sent. A new test is a separate request and uses credits.', true);
       } else {
         state.lookupFailed = true;
-        if (!handleAccess(error)) {
-          state.statusText = 'The job status could not be refreshed. The agent may still be working.';
-          setNotice('Use Refresh status to check this same job. Starting another test is disabled until its outcome is known.', true);
-        }
+        state.statusText = 'The job status could not be refreshed. The agent may still be working.';
+        setNotice('Use Refresh status to check this same job. Starting another test is disabled until its outcome is known.', true);
       }
       render();
     }
@@ -229,7 +216,6 @@
         saveReference();
       }
       state.configured = data.configured;
-      state.blocked = false;
       state.lookupFailed = false;
       if (data.activeJob?.id && state.jobId !== data.activeJob.id) {
         state.job = null;
@@ -255,10 +241,8 @@
       }
     } catch (error) {
       state.lookupFailed = true;
-      if (!handleAccess(error)) {
-        state.statusText = 'The backend status is unavailable. No new AI request was sent.';
-        setNotice('Check your connection and use Refresh status. The test button stays disabled until the backend can be checked.', true);
-      }
+      state.statusText = 'The backend status is unavailable. No new AI request was sent.';
+      setNotice('Check your connection and use Refresh status. The test button stays disabled until the backend can be checked.', true);
       state.configured = false;
     } finally {
       state.checking = false;
@@ -268,7 +252,7 @@
   }
 
   async function startTest(retrySameRequest = false) {
-    if (state.submitting || state.refreshing || state.checking || state.blocked || !state.configured) return;
+    if (state.submitting || state.refreshing || state.checking || !state.configured) return;
     if (activeStates.has(state.job?.status) || state.jobId && !state.job) return;
     if (state.uncertain && !retrySameRequest) return;
     stopPolling();
@@ -301,10 +285,8 @@
         state.pendingKey = null;
         saveReference();
       }
-      if (!handleAccess(error)) {
-        state.statusText = rejected ? 'The backend did not accept this test request.' : 'The request was sent, but its outcome is unknown.';
-        setNotice(rejected ? error.message : 'Do not start a second test. Refresh status to check whether the original request is running.', true);
-      }
+      state.statusText = rejected ? 'The backend did not accept this test request.' : 'The request was sent, but its outcome is unknown.';
+      setNotice(rejected ? error.message : 'Do not start a second test. Refresh status to check whether the original request is running.', true);
       if (error.status === 503) state.configured = false;
     } finally {
       state.submitting = false;

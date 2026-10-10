@@ -2,18 +2,19 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { SupabaseStore } = require('../src/storage/supabase-store');
 
-test('Supabase store resolves authenticated business, scopes REST queries, and sends proposals to the atomic RPC', async () => {
+test('Supabase store creates a shared demo business without user login and scopes proposal persistence', async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url: String(url), init });
-    if (String(url).includes('/rpc/resolve_business_for_user')) return new Response(JSON.stringify({ business_id: 'business-1' }), { status: 200 });
     if (String(url).includes('/rpc/persist_document_proposal')) return new Response(JSON.stringify({ ok: true }), { status: 200 });
     if (String(url).includes('/rest/v1/documents?')) return new Response('[]', { status: 200 });
-    return new Response('', { status: 204 });
+    return new Response(null, { status: 204 });
   };
   const store = new SupabaseStore({ url: 'https://db.example.test', serviceRoleKey: 'server-only', fetchImpl });
-  const business = await store.resolveBusiness({ userId: 'user-1', email: 'owner@example.test' });
-  assert.equal(business.businessId, 'business-1');
+  const business = await store.resolveDemoBusiness('00000000-0000-4000-8000-000000000001');
+  assert.equal(business.businessId, '00000000-0000-4000-8000-000000000001');
+  assert.match(calls[0].url, /businesses\?on_conflict=id/u);
+  assert.deepEqual(JSON.parse(calls[0].init.body), { id: business.businessId, name: 'TutupBuku hackathon demo' });
   await store.listDocuments('business-1');
   await store.persistProposal({ businessId: 'business-1', jobId: 'job-1', documentId: 'doc-1', result: { status: 'needs_review', findings: [] } });
   assert.match(calls[1].url, /business_id=eq\.business-1/);

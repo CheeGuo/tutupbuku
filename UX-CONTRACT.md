@@ -4,11 +4,11 @@
 
 The three peer work areas are Upload, Records, and Issues; Business setup is a supporting configuration view. Use same-context tabs with `aria-selected`, keyboard arrow navigation, visible focus, and a hash in the URL so a view survives refresh and Back. The current view updates `document.title`. Desktop uses a left rail; narrow viewports use horizontally scrollable labeled navigation.
 
-## Authentication and tenant scope
+## Direct page and API access
 
-Every business data request requires a bearer token. Local development uses the explicitly labeled email-only local sign-in. Production uses Supabase Auth email/password. The service derives the business from the verified user; the browser never submits a business ID. Access tokens are held in tab-scoped `sessionStorage`, never `localStorage`, and are cleared on sign-out or 401; no refresh token is retained by this UI. Production must be served over HTTPS. An expired session returns to sign-in with non-sensitive view state preserved.
+The main application and accounting API require no login, signup, sign-out, session restoration, bearer token, or access-required screen. All visitors can use the four work areas. Every request uses the server-configured `DEMO_BUSINESS_ID`, which defaults to `00000000-0000-4000-8000-000000000001`. Browser headers, tokens, query strings and body fields cannot select another business. All visitors share records and decisions. Audit events identify a shared demo operator, not a verified individual.
 
-An employee can submit claims and see only their own claims and issues; employee access cannot use purchasing upload, issue resolution, or approval. Owners and reviewers can inspect business records, with reviewers able to resolve issues and approve. Only owners can edit company reference data. Production API checks and Supabase row policies both enforce these scopes.
+The backend no longer calls Supabase Auth or resolves business memberships. Supabase storage still uses its private backend credential; CodeBuddy still uses its private gateway credential. These are service connections, not website login. Missing backend/AI configuration is reported as an error or waiting state inside the visible application. No failed operation is displayed as successful.
 
 ## Upload
 
@@ -24,15 +24,26 @@ Issues are listed with severity text, status, affected document, expected/observ
 
 ## Business setup
 
-The signed-in business configures its chart of accounts, approved suppliers, and buyer profile. AI may recommend only active account codes from this list. If chart or party master data is missing, the relevant checks stay unverified and request setup or reviewer input.
+Business setup can be read and saved by any visitor in the shared demo workspace. AI may recommend only active account codes from the business's chart of accounts. If chart or party master data is missing, the relevant checks stay unverified and request setup or reviewer input.
 
 ## Feedback and recovery
 
-Use inline messages for field errors, a persistent page banner for configuration/service conditions, and a polite status live region for completed actions. Keep forms busy without changing control geometry; preserve non-sensitive input on API errors. A 401 clears the expired access token and returns to sign-in. Retry is explicit, uploads are idempotent, and the interface does not expose raw provider or database error text.
+Use inline messages for field errors, a persistent page banner for configuration/service conditions, and a polite status live region for completed actions. Keep forms busy without changing control geometry; preserve non-sensitive input on API errors. API errors keep the page and current view open; there is no login redirect or session gate. Retry is explicit, uploads are idempotent, and the interface does not expose raw provider or database error text.
 
 ## Forms and controls
 
 All forms use `novalidate` and application-owned validation. Every field has a persistent label, associated help/error text, and visible invalid state. Native select controls are intentional for choosing workflow, filters, and correction fields; platform popup geometry is accepted. Long textareas use adequate fixed height and `resize: none`. HTML `<dialog>` is used only for reviewer corrections; Escape closes it and focus returns to its opener.
+
+## Canonical UI Map
+
+| Capability | Canonical owner | Source of truth | Allowed variants | Verification |
+| --- | --- | --- | --- | --- |
+| Form | Labeled forms and shared field validation | public/index.html and public/app.js | Upload, business setup, correction and issue resolution | API tests and browser input-preservation checks |
+| Scrollbar | Global stylesheet | public/styles.css | Page scrolling and records table overflow | UI contract test and narrow browser layout |
+| Toast | showToast and the toast live region | public/app.js and public/index.html | Success and error | Browser action feedback |
+| CRUD | Shared api and jsonApi helpers | public/app.js and src/server.js | Shared demo accounting reads and writes | public-demo and API tests plus browser workflow checks |
+
+The skill's static auditor detects only inline click handlers and inline textarea resize rules. It therefore reports existing externally bound buttons and globally styled textareas as violations. Event handlers in `public/app.js`, the global `textarea { resize: none; }` rule, and browser checks supply the actual evidence; inline handlers would conflict with this application's CSP.
 
 ## Responsive, accessibility, and locale
 
@@ -40,10 +51,10 @@ Target WCAG 2.2 AA: semantic landmarks, keyboard-equivalent actions, visible foc
 
 ## Export and document title
 
-Records and issues can be exported as CSV. Each work area sets a title in `{Page} — TutupBuku` form. CSV output neutralizes formula-leading values and contains only the authenticated business's records.
+Records and issues can be exported as CSV. Each work area sets a title in `{Page} — TutupBuku` form. CSV output neutralizes formula-leading values and contains only the configured demo workspace's records.
 
 ## Separate AWS connection demo
 
-The standalone demo server serves `agent-test.html` at its root. HTTP Basic operator authentication protects its entire page and API; this demo does not request business records or reuse the accounting application's email-only local sign-in. Its backend retains the separate private CodeBuddy gateway password. The browser calls only same-origin demo routes.
+The standalone demo server serves `agent-test.html` at its root. The page and fixed test routes open without a visitor login; this separate demo does not request accounting records. Its backend retains the separate private CodeBuddy gateway password. The browser calls only same-origin demo routes.
 
 The main button requests one fixed response. Setup checks and page reloads never submit model requests. Show queued, running, completed, failed, and unknown states as text; only a confirmed final reply is a successful test. Disable new submissions while a request is active or uncertain. Recovery checks the existing job or explicitly reuses the original request key after checking for a server restart. Lost in-memory state is explained without automatic resubmission. Display returned text using text nodes, with a live status region and accessible keyboard controls. This page tests the connection only; accounting tools and parallel agent workflows need separate integration.

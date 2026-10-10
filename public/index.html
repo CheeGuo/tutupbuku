@@ -5,22 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f1f5f3">
   <meta name="description" content="TutupBuku document intake and review desk">
-  <title>TutupBuku</title>
+  <title>Upload documents — TutupBuku</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <main class="access-shell" id="accessView" aria-labelledby="accessTitle" hidden>
-    <p class="eyebrow">DOCUMENT CONTROL · MYR</p>
-    <h1>TutupBuku</h1>
-    <p class="access-intro">A clear trail from incoming document to human review.</p>
-    <section class="access-card">
-      <h2 id="accessTitle">Workspace unavailable</h2>
-      <p id="accessMessage" class="quiet-note">This page requires a previously authenticated session. No sign-in form is available here.</p>
-    </section>
-  </main>
-
-  <div class="app-shell" id="appView" hidden>
+  <div class="app-shell" id="appView">
     <aside class="rail">
       <a class="brand" href="#upload" aria-label="TutupBuku home">
         <span class="brand-mark" aria-hidden="true"><span></span><i></i></span>
@@ -33,10 +23,8 @@
         <button id="tab-setup" class="nav-item" role="tab" aria-controls="panel-setup" data-view="setup"><span class="nav-glyph" aria-hidden="true">⌘</span>Business setup</button>
       </nav>
       <div class="rail-bottom">
-        <span class="rail-caption">SIGNED IN AS</span>
-        <span id="signedInEmail" class="signed-email"></span>
-        <small class="role-label" id="roleLabel">Owner</small>
-        <button class="sign-out" id="signOut" type="button">Sign out</button>
+        <span class="rail-caption">HACKATHON DEMO</span>
+        <span class="quiet-note">Document review desk</span>
       </div>
     </aside>
 
@@ -51,7 +39,7 @@
         <section id="panel-upload" class="view-panel" role="tabpanel" aria-labelledby="tab-upload" tabindex="0">
           <div class="page-heading">
             <div><p class="eyebrow">INCOMING PAPERWORK</p><h1>Every document gets a trail.</h1><p class="lede">Add a purchasing file or an employee claim. TutupBuku reads the source, checks the context, and shows what still needs a person.</p></div>
-            <div class="queue-total"><span id="recordTotal">0</span><small>documents in this desk</small></div>
+            <div class="queue-total"><span id="recordTotal">—</span><small>documents in this desk</small></div>
           </div>
 
           <section class="chain-panel" aria-labelledby="purchaseChainTitle">
@@ -85,13 +73,13 @@
               <a href="#setup" class="text-link" data-go="setup">Review business setup <span aria-hidden="true">→</span></a>
             </aside>
           </div>
-          <section class="jobs-section" aria-labelledby="jobsTitle"><div class="section-head"><div><p class="eyebrow">LIVE WORK</p><h2 id="jobsTitle">Recent processing</h2></div><button class="button subtle" id="refreshJobs" type="button">Refresh</button></div><div id="jobsList" class="jobs-list"><p class="empty-inline">No active document checks.</p></div></section>
+          <section class="jobs-section" aria-labelledby="jobsTitle"><div class="section-head"><div><p class="eyebrow">LIVE WORK</p><h2 id="jobsTitle">Recent processing</h2></div><button class="button subtle" id="refreshJobs" type="button">Refresh</button></div><div id="jobsList" class="jobs-list"><p class="empty-inline">Loading processing status…</p></div></section>
         </section>
 
         <section id="panel-records" class="view-panel" role="tabpanel" aria-labelledby="tab-records" tabindex="0" hidden>
           <div class="page-heading compact"><div><p class="eyebrow">BUSINESS RECORDS</p><h1>Documents and extracted data</h1><p class="lede">Review fields, correct extraction mistakes, and export a business-scoped CSV for accounting software.</p></div><button class="button primary" id="exportRecords" type="button">Export records CSV</button></div>
-          <div class="record-summary"><span id="recordsCount">0 records</span><button class="button subtle" id="reloadRecords" type="button">Refresh records</button></div>
-          <div class="table-frame"><table><caption class="visually-hidden">Uploaded documents and extracted fields</caption><thead><tr><th scope="col">Document</th><th scope="col">Workflow / type</th><th scope="col">Reference</th><th scope="col">Date</th><th scope="col">Amount</th><th scope="col">Account</th><th scope="col">Linked PO</th><th scope="col">Status</th><th scope="col">Review</th></tr></thead><tbody id="recordsBody"><tr><td class="table-empty" colspan="9">Records will appear here after upload.</td></tr></tbody></table></div>
+          <div class="record-summary"><span id="recordsCount">Loading records…</span><button class="button subtle" id="reloadRecords" type="button">Refresh records</button></div>
+          <div class="table-frame"><table><caption class="visually-hidden">Uploaded documents and extracted fields</caption><thead><tr><th scope="col">Document</th><th scope="col">Workflow / type</th><th scope="col">Reference</th><th scope="col">Date</th><th scope="col">Amount</th><th scope="col">Account</th><th scope="col">Linked PO</th><th scope="col">Status</th><th scope="col">Review</th></tr></thead><tbody id="recordsBody"><tr><td class="table-empty" colspan="9">Loading business records…</td></tr></tbody></table></div>
         </section>
 
         <section id="panel-issues" class="view-panel" role="tabpanel" aria-labelledby="tab-issues" tabindex="0" hidden>
