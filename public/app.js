@@ -3,10 +3,10 @@
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const authView = $('#authView');
+  const accessView = $('#accessView');
   const appView = $('#appView');
-  const config = { authMode: 'local-development', aiConfigured: false, maxUploadBytes: 15 * 1024 * 1024 };
-  const state = { documents: [], issues: [], jobs: [], masterData: { chartOfAccounts: [], suppliers: [], buyerProfile: null }, selectedFiles: [], refreshVersion: 0, authMode: 'signin', correctionDocument: null, role: 'owner' };
+  const config = { aiConfigured: false, maxUploadBytes: 15 * 1024 * 1024 };
+  const state = { documents: [], issues: [], jobs: [], masterData: { chartOfAccounts: [], suppliers: [], buyerProfile: null }, selectedFiles: [], refreshVersion: 0, correctionDocument: null, role: 'owner' };
   const tokenKey = 'tutupbuku.access-token';
   const emailKey = 'tutupbuku.signed-in-email';
   let accessToken = sessionStorage.getItem(tokenKey) || '';
@@ -36,12 +36,6 @@
       dot.className = 'connection-dot warn';
       showNotice('AI processing is not configured. Files can be saved, but agent extraction and review will wait until an AI endpoint is added.', 'warning');
     }
-    $('#authModeNote').textContent = config.authMode === 'local-development'
-      ? 'Local development sign-in: enter an email. The password field is not used here.'
-      : config.authMode === 'unconfigured' ? 'Production sign-in is waiting for service setup.' : 'Sign in with your business account.';
-    $('#authSetupNotice').hidden = config.authMode !== 'unconfigured';
-    $('#authSubmit').disabled = config.authMode === 'unconfigured';
-    $('#authModeToggle').hidden = config.authMode !== 'supabase';
   }
 
   function showNotice(message, tone = 'warning') {
@@ -100,95 +94,25 @@
     return response.json();
   }
 
+  function showAccessRequired(message = 'This page requires a previously authenticated session. No sign-in form is available here.') {
+    appView.hidden = true;
+    accessView.hidden = false;
+    $('#accessMessage').textContent = message;
+    document.title = 'TutupBuku';
+  }
+
   function expireSession() {
     accessToken = '';
     sessionStorage.removeItem(tokenKey);
     sessionStorage.removeItem(emailKey);
-    appView.hidden = true;
-    authView.hidden = false;
-    $('#authError').textContent = 'Your sign-in expired. Please sign in again.';
-    $('#authError').hidden = false;
-  }
-
-  function setAuthMode(mode) {
-    state.authMode = mode;
-    const signingUp = mode === 'signup';
-    $('#authTitle').textContent = signingUp ? 'Create your business account' : 'Sign in to your desk';
-    $('#authSubmit').textContent = signingUp ? 'Create account' : 'Sign in';
-    $('#authModeToggle').textContent = signingUp ? 'Back to sign in' : 'Create an account';
-    $('#authPassword').autocomplete = signingUp ? 'new-password' : 'current-password';
-    $('#authPasswordHelp').textContent = config.authMode === 'local-development'
-      ? 'Local development sign-in does not use a password.'
-      : signingUp ? 'Choose at least 8 characters for your business account.' : 'Enter your business account password.';
-    $('#authError').hidden = true;
-  }
-
-  async function authSubmit(event) {
-    event.preventDefault();
-    const email = $('#authEmail').value.trim();
-    const password = $('#authPassword').value;
-    const emailError = $('#authEmailError');
-    const passwordError = $('#authPasswordError');
-    emailError.hidden = true;
-    passwordError.hidden = true;
-    $('#authError').hidden = true;
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)) {
-      emailError.textContent = 'Enter a valid email address.';
-      emailError.hidden = false;
-      $('#authEmail').setAttribute('aria-invalid', 'true');
-      $('#authEmail').focus();
-      return;
-    }
-    if (config.authMode === 'supabase' && password.length < 8) {
-      passwordError.textContent = 'Enter a password with at least 8 characters.';
-      passwordError.hidden = false;
-      $('#authPassword').setAttribute('aria-invalid', 'true');
-      $('#authPassword').focus();
-      return;
-    }
-    $('#authEmail').removeAttribute('aria-invalid');
-    $('#authPassword').removeAttribute('aria-invalid');
-    const button = $('#authSubmit');
-    button.disabled = true;
-    button.setAttribute('aria-busy', 'true');
-    const original = state.authMode === 'signup' ? 'Create account' : 'Sign in';
-    button.textContent = state.authMode === 'signup' ? 'Creating account…' : 'Signing in…';
-    try {
-      if (config.authMode === 'local-development') {
-        const result = await jsonApi('/api/auth/local', { method: 'POST', body: { email } });
-        startSession(result.accessToken, email);
-      } else {
-        const signup = state.authMode === 'signup';
-        const endpoint = signup ? '/auth/v1/signup' : '/auth/v1/token?grant_type=password';
-        const response = await fetch(`${config.supabaseUrl.replace(/\/$/u, '')}${endpoint}`, {
-          method: 'POST',
-          headers: { apikey: config.supabaseAnonKey, 'content-type': 'application/json' },
-          body: JSON.stringify({ email, password }),
-        });
-        const result = await response.json();
-        if (!response.ok) throw new Error(signup ? 'Account could not be created. Check the email and password requirements.' : 'Email or password was not accepted.');
-        if (!result.access_token) {
-          $('#authError').textContent = 'Account created. Check your email to confirm it, then sign in.';
-          $('#authError').hidden = false;
-          return;
-        }
-        startSession(result.access_token, email);
-      }
-    } catch (error) {
-      $('#authError').textContent = error.message || 'Sign-in could not be completed. Try again.';
-      $('#authError').hidden = false;
-    } finally {
-      button.disabled = false;
-      button.removeAttribute('aria-busy');
-      button.textContent = original;
-    }
+    showAccessRequired('Your session expired. The sign-in form is unavailable on this page.');
   }
 
   function startSession(token, email) {
     accessToken = token;
     sessionStorage.setItem(tokenKey, token);
     sessionStorage.setItem(emailKey, email);
-    authView.hidden = true;
+    accessView.hidden = true;
     appView.hidden = false;
     $('#signedInEmail').textContent = email;
     setView(location.hash.slice(1) || 'upload', false);
@@ -665,13 +589,7 @@
 
   async function handleExport(event) { await downloadCsv(event.currentTarget.dataset.kind || (event.currentTarget.id === 'exportIssues' ? 'issues' : 'records')); }
 
-  $('#authForm').addEventListener('submit', authSubmit);
-  $('#authModeToggle').addEventListener('click', () => setAuthMode(state.authMode === 'signin' ? 'signup' : 'signin'));
-  $('#togglePassword').addEventListener('click', (event) => {
-    const password = $('#authPassword'); const showing = password.type === 'text';
-    password.type = showing ? 'password' : 'text'; event.currentTarget.textContent = showing ? 'Show' : 'Hide'; event.currentTarget.setAttribute('aria-pressed', String(!showing));
-  });
-  $('#signOut').addEventListener('click', () => { accessToken = ''; sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(emailKey); appView.hidden = true; authView.hidden = false; setAuthMode('signin'); document.title = 'Sign in — TutupBuku'; });
+  $('#signOut').addEventListener('click', () => { accessToken = ''; sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(emailKey); showAccessRequired('You have signed out. The sign-in form is unavailable on this page.'); });
   $$('[role="tab"]').forEach((tab) => { tab.addEventListener('click', () => setView(tab.dataset.view)); tab.addEventListener('keydown', tabKeydown); });
   $$('[data-go]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); setView(link.dataset.go); }));
   window.addEventListener('hashchange', () => setView(location.hash.slice(1), false));
@@ -713,11 +631,11 @@
 
   fetchConfig().then(() => {
     if (accessToken) {
-      authView.hidden = true; appView.hidden = false;
+      accessView.hidden = true; appView.hidden = false;
       $('#signedInEmail').textContent = sessionStorage.getItem(emailKey) || 'Signed-in user';
       setView(location.hash.slice(1) || 'upload', false);
       loadWorkspace().catch((error) => showToast(error.message, 'error'));
-    } else setView('upload', false);
+    } else showAccessRequired();
     const navigation = matchMedia('(max-width: 720px)');
     const updateNavigationOrientation = () => $('.main-nav').setAttribute('aria-orientation', navigation.matches ? 'horizontal' : 'vertical');
     updateNavigationOrientation();

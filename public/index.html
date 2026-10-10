@@ -5,35 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f1f5f3">
   <meta name="description" content="TutupBuku document intake and review desk">
-  <title>Sign in — TutupBuku</title>
+  <title>TutupBuku</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <div class="auth-shell" id="authView">
-    <div class="auth-mark" aria-hidden="true"><span class="mark-stem"></span><span class="mark-dot"></span></div>
+  <main class="access-shell" id="accessView" aria-labelledby="accessTitle" hidden>
     <p class="eyebrow">DOCUMENT CONTROL · MYR</p>
     <h1>TutupBuku</h1>
-    <p class="auth-intro">A clear trail from incoming document to human review.</p>
-    <section class="auth-card" aria-labelledby="authTitle">
-      <h2 id="authTitle">Sign in to your desk</h2>
-      <p id="authModeNote" class="quiet-note"></p>
-      <p id="authSetupNotice" class="notice error" role="alert" hidden>Production sign-in is unavailable until Supabase Auth and database secrets are configured by the service administrator.</p>
-      <form id="authForm" novalidate>
-        <label for="authEmail">Email</label>
-        <input id="authEmail" name="email" type="email" autocomplete="email" inputmode="email" required aria-describedby="authEmailError">
-        <p class="field-error" id="authEmailError" hidden></p>
-        <div class="label-row"><label for="authPassword">Password</label><button class="text-button" id="togglePassword" type="button" aria-pressed="false">Show</button></div>
-        <input id="authPassword" name="password" type="password" autocomplete="current-password" aria-describedby="authPasswordHelp authPasswordError">
-        <p class="quiet-note" id="authPasswordHelp">Use at least 8 characters for a business account.</p>
-        <p class="field-error" id="authPasswordError" hidden></p>
-        <p class="form-error" id="authError" role="alert" hidden></p>
-        <button class="button primary full" id="authSubmit" type="submit">Sign in</button>
-      </form>
-      <button class="button link-button" id="authModeToggle" type="button" hidden>Create an account</button>
+    <p class="access-intro">A clear trail from incoming document to human review.</p>
+    <section class="access-card">
+      <h2 id="accessTitle">Workspace unavailable</h2>
+      <p id="accessMessage" class="quiet-note">This page requires a previously authenticated session. No sign-in form is available here.</p>
     </section>
-    <p class="auth-foot">Your documents stay in your business workspace.</p>
-  </div>
+  </main>
 
   <div class="app-shell" id="appView" hidden>
     <aside class="rail">
