@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "tutupbuku": {
+      "type": "stdio",
+      "command": "C:\\Users\\Acer\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+      "args": [
+        "-B",
+        "-m",
+        "tutupbuku.app",
+        "--mcp-only",
+        "--job-tools"
+      ],
+      "env": {
+        "PYTHONPATH": "C:\\Users\\Acer\\OneDrive - xpj2t\\Documents\\GitHub\\dormathon",
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "alwaysLoad": true
+    }
+  }
+}

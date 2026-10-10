@@ -1,0 +1,24 @@
+{
+  "gateway": {
+    "auth": "password",
+    "password": "OeUVK9X2Qtx-wmrMuqa-Ay6kN2C4ritcYV7z7JZNA98",
+    "runTimeoutMs": 180000
+  },
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "disableBypassPermissionsMode": "disable",
+    "allow": [
+      "mcp__tutupbuku__accounting_build_report",
+      "mcp__tutupbuku__accounting_confirm_match",
+      "mcp__tutupbuku__accounting_create_exception",
+      "mcp__tutupbuku__accounting_get_workspace",
+      "mcp__tutupbuku__accounting_propose_bank_adjustment",
+      "mcp__tutupbuku__accounting_propose_classification",
+      "mcp__tutupbuku__health_check"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "tutupbuku"
+  ],
+  "enableAllProjectMcpServers": false
+}
