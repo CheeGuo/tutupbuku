@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en-MY">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f1f5f3">
+  <meta name="description" content="TutupBuku document intake and review desk">
+  <title>Sign in — TutupBuku</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="auth-shell" id="authView">
+    <div class="auth-mark" aria-hidden="true"><span class="mark-stem"></span><span class="mark-dot"></span></div>
+    <p class="eyebrow">DOCUMENT CONTROL · MYR</p>
+    <h1>TutupBuku</h1>
+    <p class="auth-intro">A clear trail from incoming document to human review.</p>
+    <section class="auth-card" aria-labelledby="authTitle">
+      <h2 id="authTitle">Sign in to your desk</h2>
+      <p id="authModeNote" class="quiet-note"></p>
+      <p id="authSetupNotice" class="notice error" role="alert" hidden>Production sign-in is unavailable until Supabase Auth and database secrets are configured by the service administrator.</p>
+      <form id="authForm" novalidate>
+        <label for="authEmail">Email</label>
+        <input id="authEmail" name="email" type="email" autocomplete="email" inputmode="email" required aria-describedby="authEmailError">
+        <p class="field-error" id="authEmailError" hidden></p>
+        <div class="label-row"><label for="authPassword">Password</label><button class="text-button" id="togglePassword" type="button" aria-pressed="false">Show</button></div>
+        <input id="authPassword" name="password" type="password" autocomplete="current-password" aria-describedby="authPasswordHelp authPasswordError">
+        <p class="quiet-note" id="authPasswordHelp">Use at least 8 characters for a business account.</p>
+        <p class="field-error" id="authPasswordError" hidden></p>
+        <p class="form-error" id="authError" role="alert" hidden></p>
+        <button class="button primary full" id="authSubmit" type="submit">Sign in</button>
+      </form>
+      <button class="button link-button" id="authModeToggle" type="button" hidden>Create an account</button>
+    </section>
+    <p class="auth-foot">Your documents stay in your business workspace.</p>
+  </div>
+
+  <div class="app-shell" id="appView" hidden>
+    <aside class="rail">
+      <a class="brand" href="#upload" aria-label="TutupBuku home">
+        <span class="brand-mark" aria-hidden="true"><span></span><i></i></span>
+        <span>TutupBuku<small>DOCUMENT DESK</small></span>
+      </a>
+      <nav class="main-nav" role="tablist" aria-label="Main sections" aria-orientation="vertical">
+        <button id="tab-upload" class="nav-item" role="tab" aria-controls="panel-upload" data-view="upload"><span class="nav-glyph" aria-hidden="true">＋</span>Upload</button>
+        <button id="tab-records" class="nav-item" role="tab" aria-controls="panel-records" data-view="records"><span class="nav-glyph" aria-hidden="true">▤</span>Records</button>
+        <button id="tab-issues" class="nav-item" role="tab" aria-controls="panel-issues" data-view="issues"><span class="nav-glyph" aria-hidden="true">!</span>Issues<span id="issueCount" class="nav-count" hidden>0</span></button>
+        <button id="tab-setup" class="nav-item" role="tab" aria-controls="panel-setup" data-view="setup"><span class="nav-glyph" aria-hidden="true">⌘</span>Business setup</button>
+      </nav>
+      <div class="rail-bottom">
+        <span class="rail-caption">SIGNED IN AS</span>
+        <span id="signedInEmail" class="signed-email"></span>
+        <small class="role-label" id="roleLabel">Owner</small>
+        <button class="sign-out" id="signOut" type="button">Sign out</button>
+      </div>
+    </aside>
+
+    <div class="main-column">
+      <header class="topbar">
+        <div><span class="eyebrow" id="pageEyebrow">INTAKE WORKSPACE</span><h2 id="pageTitle">Upload documents</h2></div>
+        <div class="connection-state"><span class="connection-dot" aria-hidden="true"></span><span id="connectionLabel">Checking services</span></div>
+      </header>
+      <div id="globalNotice" class="notice" role="status" aria-live="polite" hidden></div>
+
+      <main>
+        <section id="panel-upload" class="view-panel" role="tabpanel" aria-labelledby="tab-upload" tabindex="0">
+          <div class="page-heading">
+            <div><p class="eyebrow">INCOMING PAPERWORK</p><h1>Every document gets a trail.</h1><p class="lede">Add a purchasing file or an employee claim. TutupBuku reads the source, checks the context, and shows what still needs a person.</p></div>
+            <div class="queue-total"><span id="recordTotal">0</span><small>documents in this desk</small></div>
+          </div>
+
+          <section class="chain-panel" aria-labelledby="purchaseChainTitle">
+            <div class="chain-heading"><div><p class="eyebrow">PURCHASING SEQUENCE</p><h2 id="purchaseChainTitle">The document trail</h2></div><p>Out-of-order uploads stay in review until linked evidence is found.</p></div>
+            <ol class="document-chain">
+              <li><span>Quotation</span></li><li><span>PO</span></li><li><span>DO</span></li><li><span>Invoice</span></li><li><span>Payment advice</span></li><li><span>Receipt</span></li>
+            </ol>
+          </section>
+
+          <div class="upload-layout">
+            <section class="panel upload-panel" aria-labelledby="uploadTitle">
+              <div class="panel-heading"><div><p class="eyebrow">NEW INTAKE</p><h2 id="uploadTitle">Add documents</h2></div><span class="step-tag">CSV · PDF · image</span></div>
+              <form id="uploadForm" novalidate>
+                <div class="field-grid">
+                  <div class="field-group"><label for="workflow">Workflow</label><select id="workflow" name="workflow" aria-describedby="workflowHelp workflowError"><option value="auto">Let Master Agent decide</option><option value="purchasing">Purchasing documents</option><option value="claim">Employee claim</option></select><p class="field-help" id="workflowHelp">Automatic routing checks the document content. You can also choose a workflow yourself.</p><p class="field-error" id="workflowError" hidden></p></div>
+                  <div class="field-group" id="purposeGroup" hidden><label for="claimPurpose">Employee's stated purpose</label><input id="claimPurpose" name="purpose" type="text" maxlength="2000" placeholder="e.g. Lunch with Company X to discuss the June project" aria-describedby="purposeHelp purposeError"><p class="field-help" id="purposeHelp">Write the actual reason. The system will compare it with the receipt contents.</p><p class="field-error" id="purposeError" hidden></p></div>
+                </div>
+                <label class="drop-zone" id="dropZone" for="fileInput">
+                  <input id="fileInput" class="visually-hidden" type="file" accept=".csv,.tsv,.txt,.pdf,.png,.jpg,.jpeg,.webp" multiple aria-describedby="fileHelp fileError">
+                  <span class="upload-glyph" aria-hidden="true">↑</span><strong>Choose files or drop them here</strong><span class="field-help" id="fileHelp">CSV, TSV, TXT, PDF, PNG, JPG, WEBP · Up to 15 MB each</span>
+                </label>
+                <p class="field-error" id="fileError" hidden></p>
+                <ul id="selectedFiles" class="selected-files" aria-label="Selected files"></ul>
+                <div class="form-actions"><p class="quiet-note">Files are saved before AI checks begin. An unconfigured model will be shown as waiting for setup.</p><button class="button primary" id="uploadButton" type="submit">Upload selected files</button></div>
+              </form>
+            </section>
+            <aside class="side-note">
+              <span class="note-mark" aria-hidden="true">i</span><h2>What happens after upload?</h2>
+              <p>The Master Agent routes the file. The Docs Agent extracts fields with page, row, or line evidence. Relevant checks then run in parallel.</p>
+              <p>Agents recommend and flag. A reviewer decides whether a flagged record is corrected, resolved, or approved.</p>
+              <a href="#setup" class="text-link" data-go="setup">Review business setup <span aria-hidden="true">→</span></a>
+            </aside>
+          </div>
+          <section class="jobs-section" aria-labelledby="jobsTitle"><div class="section-head"><div><p class="eyebrow">LIVE WORK</p><h2 id="jobsTitle">Recent processing</h2></div><button class="button subtle" id="refreshJobs" type="button">Refresh</button></div><div id="jobsList" class="jobs-list"><p class="empty-inline">No active document checks.</p></div></section>
+        </section>
+
+        <section id="panel-records" class="view-panel" role="tabpanel" aria-labelledby="tab-records" tabindex="0" hidden>
+          <div class="page-heading compact"><div><p class="eyebrow">BUSINESS RECORDS</p><h1>Documents and extracted data</h1><p class="lede">Review fields, correct extraction mistakes, and export a business-scoped CSV for accounting software.</p></div><button class="button primary" id="exportRecords" type="button">Export records CSV</button></div>
+          <div class="record-summary"><span id="recordsCount">0 records</span><button class="button subtle" id="reloadRecords" type="button">Refresh records</button></div>
+          <div class="table-frame"><table><caption class="visually-hidden">Uploaded documents and extracted fields</caption><thead><tr><th scope="col">Document</th><th scope="col">Workflow / type</th><th scope="col">Reference</th><th scope="col">Date</th><th scope="col">Amount</th><th scope="col">Account</th><th scope="col">Linked PO</th><th scope="col">Status</th><th scope="col">Review</th></tr></thead><tbody id="recordsBody"><tr><td class="table-empty" colspan="9">Records will appear here after upload.</td></tr></tbody></table></div>
+        </section>
+
+        <section id="panel-issues" class="view-panel" role="tabpanel" aria-labelledby="tab-issues" tabindex="0" hidden>
+          <div class="page-heading compact"><div><p class="eyebrow">HUMAN REVIEW QUEUE</p><h1>Issues that need a decision</h1><p class="lede">Each flag includes what was checked and the evidence that led to it. Resolve only after the supporting information is clear.</p></div><button class="button primary" id="exportIssues" type="button">Export issues CSV</button></div>
+          <div class="record-summary"><span id="issuesCount">Loading issues…</span><label class="filter-label" for="issueFilter">Show<select id="issueFilter"><option value="open">Open and needs review</option><option value="all">All issues</option><option value="resolved">Resolved</option></select></label></div>
+          <div id="issuesList" class="issues-list"><p class="empty-inline">Loading business issues…</p></div>
+        </section>
+
+        <section id="panel-setup" class="view-panel" role="tabpanel" aria-labelledby="tab-setup" tabindex="0" hidden>
+          <div class="page-heading compact"><div><p class="eyebrow">BUSINESS REFERENCE DATA</p><h1>Set the rules agents can trust</h1><p class="lede">The supplier and buyer checks use these approved identities. Expense categories can only come from your active chart of accounts.</p></div></div>
+          <form id="masterDataForm" class="setup-grid" novalidate>
+            <section class="panel setup-card"><p class="eyebrow">EXPENSE CODING</p><h2>Chart of accounts</h2><p class="field-help">One account per line, in this format: <code>code | account name</code></p><label class="visually-hidden" for="accountsText">Chart of accounts, one code and name per line</label><textarea id="accountsText" rows="7" spellcheck="false" aria-describedby="accountsHelp accountsError" placeholder="6100 | Travel and mileage&#10;6200 | Meals and entertainment"></textarea><p class="field-error" id="accountsError" hidden></p><p class="quiet-note" id="accountsHelp">Only listed active account codes can be recommended.</p></section>
+            <section class="panel setup-card"><p class="eyebrow">PURCHASING CHECKS</p><h2>Approved suppliers</h2><p class="field-help">One supplier per line: <code>legal name | registration number</code></p><label class="visually-hidden" for="suppliersText">Approved suppliers, one per line</label><textarea id="suppliersText" rows="7" spellcheck="false" aria-describedby="suppliersHelp suppliersError" placeholder="Mega Engineering Sdn Bhd | 201900123456"></textarea><p class="field-error" id="suppliersError" hidden></p><p class="quiet-note" id="suppliersHelp">Names are compared with the document and the matched PO.</p></section>
+            <section class="panel setup-card buyer-card"><p class="eyebrow">ENTITY CHECK</p><h2>Our buyer identity</h2><div class="field-grid two"><div class="field-group"><label for="buyerName">Legal buyer name</label><input id="buyerName" name="buyerName" maxlength="250" autocomplete="organization"></div><div class="field-group"><label for="buyerRegistration">Registration number</label><input id="buyerRegistration" name="buyerRegistration" maxlength="100"></div></div><p class="field-help">The buyer on purchasing records is checked against this profile.</p></section>
+            <div class="setup-actions"><p id="setupStatus" class="quiet-note" role="status" aria-live="polite">Master data is private to this business.</p><button class="button primary" id="saveMasterData" type="submit">Save business setup</button></div>
+          </form>
+        </section>
+      </main>
+      <footer class="app-footer"><span>Evidence first. Human approval always.</span><span>MYR · <span id="footerYear"></span></span></footer>
+    </div>
+  </div>
+
+  <dialog id="correctionDialog" aria-labelledby="correctionTitle">
+    <form id="correctionForm" novalidate>
+      <div class="dialog-head"><div><p class="eyebrow">HUMAN CORRECTION</p><h2 id="correctionTitle">Correct extracted information</h2></div><button class="icon-button" id="closeCorrection" type="button" aria-label="Close correction dialog">×</button></div>
+      <p class="dialog-copy">Your correction is logged with your reason. Run checks again after saving it.</p>
+      <input id="correctionDocumentId" type="hidden">
+      <div class="field-group"><label for="correctionField">Field</label><select id="correctionField" required><option value="supplierName">Supplier name</option><option value="buyerName">Buyer name</option><option value="merchantName">Merchant name</option><option value="documentNumber">Document number</option><option value="invoiceNumber">Invoice number</option><option value="poNumber">PO number</option><option value="documentDate">Document date</option><option value="totalAmountSen">Amount in sen</option><option value="paymentTerm">Payment term</option><option value="purpose">Claim purpose</option><option value="description">Description</option><option value="accountCode">Account code</option><option value="type">Document type</option></select></div>
+      <div class="field-group"><label for="correctionValue">Correct value</label><input id="correctionValue" type="text" required aria-describedby="correctionValueHelp correctionError"><p id="correctionValueHelp" class="field-help">For amount, enter Malaysian sen as a whole number (RM 5.00 = 500 sen).</p></div>
+      <div class="field-group"><label for="correctionReason">Why is this value correct?</label><textarea id="correctionReason" rows="3" required aria-describedby="correctionError"></textarea></div>
+      <p id="correctionError" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button id="cancelCorrection" class="button subtle" type="button">Cancel</button><button id="saveCorrection" class="button primary" type="submit">Save correction</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

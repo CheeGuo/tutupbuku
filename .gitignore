@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.tutupbuku-data/
+coverage/
+*.log
+
+__pycache__/
+*.py[cod]
+.dist/
+.superpowers/

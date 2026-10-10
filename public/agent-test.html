@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en-MY">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f1f5f3">
+  <meta name="description" content="Test a real TutupBuku request to your AWS agent">
+  <title>AWS agent test — TutupBuku</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/agent-test.css">
+  <script src="/agent-connection.js" defer></script>
+</head>
+<body class="agent-test-page">
+  <header class="agent-test-header">
+    <a class="brand" href="/agent-test.html" aria-label="TutupBuku agent test">
+      <span class="brand-mark" aria-hidden="true"><span></span><i></i></span>
+      <span>TutupBuku<small>CONNECTION TEST</small></span>
+    </a>
+    <span class="agent-test-header-note">Operator demo</span>
+  </header>
+
+  <main class="agent-test-main">
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">WEBSITE TO AWS</p>
+        <h1>Test the AWS agent</h1>
+        <p class="lede">Send one small request from this website and see the actual AI reply.</p>
+      </div>
+    </div>
+
+    <section class="chain-panel agent-test-route" aria-labelledby="routeTitle">
+      <h2 id="routeTitle">The request path</h2>
+      <ol class="document-chain" aria-label="Request travels through these services">
+        <li><span>This website</span></li>
+        <li><span>TutupBuku backend</span></li>
+        <li><span>AWS agent</span></li>
+      </ol>
+    </section>
+
+    <noscript><p class="notice error">Enable JavaScript to run this test. No AI request has been sent.</p></noscript>
+
+    <section class="panel agent-test-panel" aria-labelledby="testTitle">
+      <div class="panel-heading">
+        <h2 id="testTitle">One real AI request</h2>
+        <span class="status-badge pending" id="jobBadge">Checking setup</span>
+      </div>
+
+      <div class="agent-test-prompt">
+        <p class="eyebrow">EXPECTED REPLY</p>
+        <code>AWS_BUDDY_OK</code>
+        <p class="quiet-note">The agent is asked to return this text without using tools.</p>
+      </div>
+
+      <div class="agent-test-actions">
+        <button class="button primary" id="runTest" type="button" disabled aria-describedby="creditNote">Run AWS agent test</button>
+        <button class="button subtle" id="refreshStatus" type="button" hidden disabled>Refresh status</button>
+        <button class="button subtle" id="retryRequest" type="button" hidden disabled aria-describedby="recoveryNote">Retry same request</button>
+      </div>
+      <p class="quiet-note" id="creditNote">Each new test uses your existing WorkBuddy credits. This is a connection test; it does not review accounting records.</p>
+      <p class="quiet-note agent-test-recovery" id="recoveryNote" hidden>Retry keeps the original request key. If the first request never reached the backend, it starts that test and uses credits.</p>
+
+      <div class="agent-test-feedback" aria-live="polite" aria-atomic="true">
+        <p id="statusText" class="agent-test-status">Checking whether the backend is configured. No AI request is sent on page load.</p>
+        <p id="notice" class="notice" hidden></p>
+      </div>
+
+      <section class="agent-test-result" id="resultPanel" aria-labelledby="resultTitle" hidden>
+        <h3 id="resultTitle">Actual AI reply</h3>
+        <pre id="answer" tabindex="0" aria-label="Actual AI reply"></pre>
+        <p class="quiet-note" id="resultNote"></p>
+      </section>
+
+      <details class="agent-test-details" id="jobDetails" hidden>
+        <summary>Job details</summary>
+        <dl>
+          <div><dt>Job reference</dt><dd id="jobId"></dd></div>
+          <div><dt>Started</dt><dd id="createdAt"></dd></div>
+          <div><dt>Updated</dt><dd id="updatedAt"></dd></div>
+          <div id="gatewayReference" hidden><dt>Agent run reference</dt><dd id="gatewayRunId"></dd></div>
+        </dl>
+      </details>
+    </section>
+
+    <p class="agent-test-foot quiet-note">A completed reply confirms an AI request. Accounting tool calls and parallel agents need their own tests.</p>
+  </main>
+</body>
+</html>

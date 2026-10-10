@@ -1,0 +1,12 @@
+.git
+.tutupbuku-data
+node_modules
+coverage
+tests
+test
+docs
+infra
+*.log
+.env
+.env.*
+!.env.example
