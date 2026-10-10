@@ -3,35 +3,25 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-test('operator UI provides authenticated upload, records, issue review, and business setup views', () => {
+test('public app serves the Dormathon month-end review desk UI', () => {
   const root = path.join(__dirname, '..', 'public');
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   const script = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
   const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
-  for (const label of ['Upload', 'Records', 'Issues', 'Business setup']) assert.match(html, new RegExp(label, 'i'));
-  assert.match(html, /novalidate/i);
-  assert.match(html, /aria-live/i);
-  assert.match(html, /value="auto">Let Master Agent decide/u);
-  assert.match(script, /\/api\/documents/);
-  assert.match(script, /\/api\/issues/);
-  assert.match(script, /\/api\/master-data/);
-  assert.match(script, /reprocess/);
-  assert.match(css, /prefers-reduced-motion/);
-  assert.match(css, /scrollbar-color/);
-});
-test('Dormathon workspace UI is retained behind TutupBuku sign-in', () => {
-  const root = path.join(__dirname, '..', 'public');
-  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-  const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
-  assert.match(html, /id="authForm"/u);
-  assert.match(html, /id="appView" hidden/u);
-  assert.match(html, /SIGNED IN AS/u);
-  assert.match(html, /id="signOut"/u);
-  assert.match(html, /id="recordTotal">—/u);
-  assert.match(html, /Loading processing status/u);
-  assert.match(html, /Loading records…/u);
-  assert.match(html, /Loading business records…/u);
-  assert.match(html, /Loading business issues…/u);
-  assert.match(css, /\.auth-shell/u);
-  assert.match(css, /\.app-shell/u);
+
+  assert.match(html, /TutupBuku — Month-end review desk/u);
+  for (const label of ['Inputs', 'Review', 'Review Pack']) {
+    assert.ok(html.includes(label), 'missing Dormathon screen: ' + label);
+  }
+  for (const id of ['view-inputs', 'view-review', 'view-pack', 'file-input', 'build-button']) {
+    assert.ok(html.includes('id="' + id + '"'), 'missing Dormathon control: ' + id);
+  }
+  assert.match(html, /href="\/styles\.css"/u);
+  assert.match(html, /src="\/app\.js"/u);
+  assert.doesNotMatch(html, /authForm|authView|Sign in to your desk|Business setup|Upload documents/u);
+  assert.match(script, /\/api\/case/u);
+  assert.match(script, /\/api\/run/u);
+  assert.match(script, /\/api\/decisions/u);
+  assert.match(script, /\/api\/build-review-pack/u);
+  assert.match(css, /prefers-reduced-motion/u);
 });

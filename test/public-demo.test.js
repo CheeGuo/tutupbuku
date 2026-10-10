@@ -13,21 +13,24 @@ async function startApp(t) {
   const app = createApplication({ env: { NODE_ENV: 'development', APP_SECRET: 'test-secret' }, store });
   await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
-  return `http://127.0.0.1:${app.server.address().port}`;
+  return 'http://127.0.0.1:' + app.server.address().port;
 }
 
-test('TutupBuku restores sign-in UI and protects accounting APIs until authenticated', async (t) => {
+test('server delivers the Dormathon review UI while existing accounting APIs remain protected', async (t) => {
   const base = await startApp(t);
   const page = await fetch(base);
   assert.equal(page.status, 200);
   const html = await page.text();
-  assert.match(html, /id="authView"/u);
-  assert.match(html, /id="authForm"/u);
-  assert.match(html, /id="authEmail"/u);
-  assert.match(html, /id="signOut"/u);
-  assert.equal((await fetch(`${base}/api/documents`)).status, 401);
+  assert.match(html, /TutupBuku — Month-end review desk/u);
+  assert.match(html, /id="view-inputs"/u);
+  assert.match(html, /id="view-review"/u);
+  assert.match(html, /id="view-pack"/u);
+  assert.doesNotMatch(html, /id="authForm"|id="authView"|Sign in to your desk/u);
+  assert.equal((await fetch(base + '/styles.css')).status, 200);
+  assert.equal((await fetch(base + '/app.js')).status, 200);
 
-  const auth = await fetch(`${base}/api/auth/local`, {
+  assert.equal((await fetch(base + '/api/documents')).status, 401);
+  const auth = await fetch(base + '/api/auth/local', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: 'reviewer@example.test' }),
@@ -35,7 +38,7 @@ test('TutupBuku restores sign-in UI and protects accounting APIs until authentic
   assert.equal(auth.status, 200);
   const { accessToken } = await auth.json();
   assert.ok(accessToken);
-  assert.equal((await fetch(`${base}/api/documents`, {
-    headers: { authorization: `Bearer ${accessToken}` },
+  assert.equal((await fetch(base + '/api/documents', {
+    headers: { authorization: 'Bearer ' + accessToken },
   })).status, 200);
 });
