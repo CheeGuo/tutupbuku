@@ -8,12 +8,12 @@ const { LocalStore } = require('../src/storage/local-store');
 
 async function json(response) { return response.json(); }
 
-test('anonymous upload shows agent progress, shared demo records, and CSV export', async (t) => {
+test('authenticated upload shows agent progress, owner-scoped records, and CSV export', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tutupbuku-api-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const store = new LocalStore({ dataDir });
   const app = createApplication({
-    env: { NODE_ENV: 'development', AI_BASE_URL: '', AI_MODEL: '' },
+    env: { NODE_ENV: 'development', APP_SECRET: 'test-secret', AI_BASE_URL: '', AI_MODEL: '' },
     store,
     processDocument: async ({ document, emit }) => {
       await emit({ agent: 'docs-agent', state: 'completed', summary: 'CSV parsed.' });
@@ -30,7 +30,11 @@ test('anonymous upload shows agent progress, shared demo records, and CSV export
   const homepage = await fetch(base);
   assert.equal(homepage.status, 200);
   assert.match(homepage.headers.get('content-security-policy'), /frame-ancestors 'none'/);
-  const headers = {};
+  const auth = await json(await fetch(`${base}/api/auth/local`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'owner@example.test' }),
+  }));
+  const headers = { authorization: `Bearer ${auth.accessToken}` };
 
   const disguised = await fetch(`${base}/api/documents`, {
     method: 'POST', headers: { ...headers, 'content-type': 'image/jpeg', 'x-filename': 'receipt.jpg', 'x-workflow': 'claim', 'x-claim-purpose': 'Business trip fuel' },
@@ -69,9 +73,14 @@ test('anonymous upload shows agent progress, shared demo records, and CSV export
   assert.match(await exported.text(), /INV-1/);
   assert.equal(exported.headers.get('content-type').split(';')[0], 'text/csv');
 
-  const anotherBrowser = await fetch(`${base}/api/jobs/${created.job.id}`);
-  assert.equal(anotherBrowser.status, 200);
-  assert.equal((await json(anotherBrowser)).id, created.job.id);
+  const other = await json(await fetch(`${base}/api/auth/local`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'other@example.test' }),
+  }));
+  const privateResponse = await fetch(`${base}/api/jobs/${created.job.id}`, {
+    headers: { authorization: `Bearer ${other.accessToken}` },
+  });
+  assert.equal(privateResponse.status, 404);
 });
 
 test('CSV export escapes spreadsheet formula cells', () => {
@@ -80,7 +89,7 @@ test('CSV export escapes spreadsheet formula cells', () => {
   assert.match(csv, /"1200"/);
 });
 
-test('removed login endpoint does not issue tokens', async (t) => {
+test('production does not issue local-development bearer tokens', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tutupbuku-auth-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const app = createApplication({ env: { NODE_ENV: 'production' }, store: new LocalStore({ dataDir }) });
@@ -92,9 +101,9 @@ test('removed login endpoint does not issue tokens', async (t) => {
   assert.equal(response.status, 404);
 });
 
-test('production storage requires only its URL and server key', () => {
+test('production configuration rejects missing Supabase authentication and server key', () => {
   const { assertProductionConfiguration } = require('../src/server');
-  assert.throws(() => assertProductionConfiguration({ NODE_ENV: 'production', SUPABASE_URL: 'https://db.example.test' }), /SUPABASE_SERVICE_ROLE_KEY/u);
+  assert.throws(() => assertProductionConfiguration({ NODE_ENV: 'production', SUPABASE_URL: 'https://db.example.test' }), /SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY/u);
   assert.doesNotThrow(() => assertProductionConfiguration({ NODE_ENV: 'development' }));
 });
 
@@ -103,7 +112,7 @@ test('automatic intake lets the Master Agent route a claim and saves the resolve
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   let routeMode;
   const app = createApplication({
-    env: { NODE_ENV: 'development' },
+    env: { NODE_ENV: 'development', APP_SECRET: 'test-secret' },
     store: new LocalStore({ dataDir }),
     processDocument: async ({ document }) => {
       routeMode = document.routeMode;
@@ -113,7 +122,8 @@ test('automatic intake lets the Master Agent route a claim and saves the resolve
   await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  const headers = { 'x-filename': 'receipt.txt', 'x-workflow': 'auto', 'x-claim-purpose': encodeURIComponent('Lunch with Company X'), 'content-type': 'text/plain' };
+  const auth = await json(await fetch(`${base}/api/auth/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'auto@example.test' }) }));
+  const headers = { authorization: `Bearer ${auth.accessToken}`, 'x-filename': 'receipt.txt', 'x-workflow': 'auto', 'x-claim-purpose': encodeURIComponent('Lunch with Company X'), 'content-type': 'text/plain' };
   const response = await fetch(`${base}/api/documents`, { method: 'POST', headers, body: 'Cafe receipt' });
   assert.equal(response.status, 201);
   const { document, job } = await json(response);
@@ -129,32 +139,48 @@ test('automatic intake lets the Master Agent route a claim and saves the resolve
   assert.equal(saved.purpose, 'Lunch with Company X');
 });
 
-test('browser-supplied business and login headers cannot change the shared demo workspace', async (t) => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tutupbuku-demo-scope-'));
+test('employee role is limited to own claims and cannot use reviewer or owner actions', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tutupbuku-rbac-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const store = new LocalStore({ dataDir });
-  await store.createDocument({ id: 'private-document', businessId: 'other-business', originalFilename: 'other.txt', workflow: 'claim' });
-  const app = createApplication({ env: { NODE_ENV: 'development' }, store });
+  store.resolveBusiness = async ({ userId, email }) => ({ businessId: 'shared-business', userId, email, role: email.startsWith('employee') ? 'employee' : 'owner' });
+  const app = createApplication({
+    env: { NODE_ENV: 'development', APP_SECRET: 'test-secret' }, store,
+    processDocument: async ({ document }) => ({ status: 'completed', workflow: document.workflow, document: { type: document.workflow === 'claim' ? 'receipt' : 'invoice' }, findings: [] }),
+  });
   await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  const response = await fetch(`${base}/api/documents?businessId=other-business`, {
-    headers: { 'x-business-id': 'other-business', authorization: 'Bearer old-login-token' },
-  });
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), []);
-  assert.equal((await fetch(`${base}/api/documents/private-document/approve`, { method: 'POST' })).status, 404);
-  assert.equal((await fetch(`${base}/api/session`)).status, 404);
+  const signIn = async (email) => json(await fetch(`${base}/api/auth/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }) }));
+  const employee = await signIn('employee@example.test');
+  const owner = await signIn('owner@example.test');
+  const employeeHeaders = { authorization: `Bearer ${employee.accessToken}` };
+  const ownerHeaders = { authorization: `Bearer ${owner.accessToken}` };
+  assert.equal((await json(await fetch(`${base}/api/session`, { headers: employeeHeaders }))).role, 'employee');
+  const deniedPurchase = await fetch(`${base}/api/documents`, { method: 'POST', headers: { ...employeeHeaders, 'content-type': 'text/plain', 'x-filename': 'invoice.txt', 'x-workflow': 'purchasing' }, body: 'invoice' });
+  assert.equal(deniedPurchase.status, 403);
+  const claim = await fetch(`${base}/api/documents`, { method: 'POST', headers: { ...employeeHeaders, 'content-type': 'text/plain', 'x-filename': 'claim.txt', 'x-workflow': 'claim', 'x-claim-purpose': 'Lunch with Company X' }, body: 'claim receipt' }).then(json);
+  const purchase = await fetch(`${base}/api/documents`, { method: 'POST', headers: { ...ownerHeaders, 'content-type': 'text/plain', 'x-filename': 'invoice.txt', 'x-workflow': 'purchasing' }, body: 'invoice' });
+  assert.equal(purchase.status, 201);
+  const visible = await json(await fetch(`${base}/api/documents`, { headers: employeeHeaders }));
+  assert.deepEqual(visible.map((document) => document.id), [claim.document.id]);
+  const noApprove = await fetch(`${base}/api/documents/${claim.document.id}/approve`, { method: 'POST', headers: { ...employeeHeaders, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(noApprove.status, 403);
+  const noSetupWrite = await fetch(`${base}/api/master-data`, { method: 'PUT', headers: { ...employeeHeaders, 'content-type': 'application/json' }, body: JSON.stringify({ chartOfAccounts: [], suppliers: [] }) });
+  assert.equal(noSetupWrite.status, 403);
+  const exported = await fetch(`${base}/api/export?kind=records`, { headers: employeeHeaders });
+  assert.match(await exported.text(), /claim\.txt/u);
 });
 
 test('master data endpoint saves a tenant chart of accounts and supplier/buyer records', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tutupbuku-master-api-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
-  const app = createApplication({ env: { NODE_ENV: 'development' }, store: new LocalStore({ dataDir }) });
+  const app = createApplication({ env: { NODE_ENV: 'development', APP_SECRET: 'test-secret' }, store: new LocalStore({ dataDir }) });
   await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  const headers = { 'content-type': 'application/json' };
+  const auth = await json(await fetch(`${base}/api/auth/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'accounts@example.test' }) }));
+  const headers = { authorization: `Bearer ${auth.accessToken}`, 'content-type': 'application/json' };
   const saved = await fetch(`${base}/api/master-data`, {
     method: 'PUT', headers,
     body: JSON.stringify({ chartOfAccounts: [{ code: '6100', label: 'Travel' }], suppliers: [{ legalName: 'Mega Engineering' }], buyerProfile: { legalName: 'Example Sdn Bhd' } }),
@@ -172,7 +198,7 @@ test('reviewer corrections trigger rechecks, issues need explicit resolution, an
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   let runs = 0;
   const app = createApplication({
-    env: { NODE_ENV: 'development' },
+    env: { NODE_ENV: 'development', APP_SECRET: 'test-secret' },
     store: new LocalStore({ dataDir }),
     processDocument: async ({ document }) => {
       runs += 1;
@@ -188,7 +214,8 @@ test('reviewer corrections trigger rechecks, issues need explicit resolution, an
   await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  const headers = { 'content-type': 'application/json' };
+  const auth = await json(await fetch(`${base}/api/auth/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'reviewer@example.test' }) }));
+  const headers = { authorization: `Bearer ${auth.accessToken}`, 'content-type': 'application/json' };
   const upload = await fetch(`${base}/api/documents`, { method: 'POST', headers: { ...headers, 'x-filename': 'invoice.txt', 'x-workflow': 'purchasing' }, body: 'invoice source' });
   const { document, job } = await json(upload);
   let current;

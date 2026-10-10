@@ -1,6 +1,6 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { auditPoBalance } = require('../domain/audit');
 
 function clone(value) { return value === undefined ? undefined : structuredClone(value); }
@@ -43,19 +43,7 @@ class LocalStore {
       const value = await mutator(state);
       const temporary = `${this.statePath}.${randomUUID()}.tmp`;
       await fs.writeFile(temporary, JSON.stringify(state, null, 2), { mode: 0o600 });
-      try {
-        for (let attempt = 0; ; attempt += 1) {
-          try { await fs.rename(temporary, this.statePath); break; }
-          catch (error) {
-            // Windows can briefly deny replacement while another read holds the file.
-            if (process.platform !== 'win32' || !['EPERM', 'EBUSY'].includes(error.code) || attempt >= 4) throw error;
-            await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
-          }
-        }
-      } catch (error) {
-        await fs.rm(temporary, { force: true }).catch(() => {});
-        throw error;
-      }
+      await fs.rename(temporary, this.statePath);
       return clone(value);
     });
     this.writeQueue = run.catch(() => {});
@@ -375,11 +363,12 @@ class LocalStore {
     });
   }
 
-  async resolveDemoBusiness(businessId) {
-    safeSegment(businessId);
+  async resolveBusiness({ userId, email }) {
+    if (!userId || !email) throw new TypeError('Authenticated user identity is required.');
+    const key = createHash('sha256').update(String(userId)).digest('hex');
     return this.mutate((state) => {
-      state.businesses[businessId] ||= { businessId, name: 'TutupBuku hackathon demo', createdAt: new Date().toISOString() };
-      return state.businesses[businessId];
+      if (!state.businesses[key]) state.businesses[key] = { businessId: `business-${key.slice(0, 24)}`, userId, email: String(email).toLowerCase(), role: 'owner', createdAt: new Date().toISOString() };
+      return state.businesses[key];
     });
   }
 

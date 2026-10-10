@@ -1,5 +1,5 @@
 const http = require('node:http');
-const { randomUUID, createHash } = require('node:crypto');
+const { createHmac, randomUUID, timingSafeEqual, createHash } = require('node:crypto');
 const path = require('node:path');
 const { LocalStore } = require('./storage/local-store');
 
@@ -16,6 +16,25 @@ const SECURITY_HEADERS = {
 function json(response, status, data) {
   response.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(data));
+}
+
+function encode(value) { return Buffer.from(JSON.stringify(value)).toString('base64url'); }
+function sign(value, secret) { return createHmac('sha256', secret).update(value).digest('base64url'); }
+function issueLocalToken(user, secret) {
+  const payload = encode({ sub: user.id, email: user.email, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 12 });
+  return `${payload}.${sign(payload, secret)}`;
+}
+function verifyLocalToken(token, secret) {
+  const [payload, signature, extra] = String(token || '').split('.');
+  if (!payload || !signature || extra) return null;
+  const expected = Buffer.from(sign(payload, secret));
+  const supplied = Buffer.from(signature);
+  if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!data.sub || !data.email || !Number.isFinite(data.exp) || data.exp <= Date.now() / 1000) return null;
+    return { id: data.sub, email: data.email };
+  } catch { return null; }
 }
 
 async function readBody(request, maximum = MAX_UPLOAD_BYTES) {
@@ -42,19 +61,16 @@ function toCsv(rows) {
 
 function assertProductionConfiguration(env = process.env) {
   if (env.NODE_ENV !== 'production') return;
-  const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
+  const required = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'];
   const missing = required.filter((name) => !String(env[name] || '').trim());
-  if (missing.length) throw new Error(`Production requires ${missing.join(', ')}. LocalStore is development-only.`);
+  if (missing.length) throw new Error(`Production requires ${missing.join(', ')}. LocalStore and local sign-in are development-only.`);
 }
 
-function createApplication({ env = process.env, store, processDocument } = {}) {
+function createApplication({ env = process.env, store, processDocument, fetchImpl = globalThis.fetch } = {}) {
   const dataDir = path.resolve(env.DATA_DIR || path.join(process.cwd(), '.tutupbuku-data'));
   const storage = store || new LocalStore({ dataDir });
-  const businessId = String(env.DEMO_BUSINESS_ID || '00000000-0000-4000-8000-000000000001').trim();
-  const actor = { id: '00000000-0000-4000-8000-000000000002' };
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(businessId)) {
-    throw new TypeError('DEMO_BUSINESS_ID must be a UUID.');
-  }
+  const supabaseAuthConfigured = Boolean(String(env.SUPABASE_URL || '').trim() && String(env.SUPABASE_ANON_KEY || '').trim());
+  const supabaseStoreConfigured = Boolean(supabaseAuthConfigured && String(env.SUPABASE_SERVICE_ROLE_KEY || '').trim());
   const processingQueue = [];
   const scheduledJobs = new Set();
   const maxParallelJobs = Math.max(1, Math.min(Number(env.MAX_PARALLEL_JOBS) || 2, 16));
@@ -97,7 +113,8 @@ function createApplication({ env = process.env, store, processDocument } = {}) {
       if (request.method === 'GET' && url.pathname === '/api/config') {
         return json(response, 200, {
           aiConfigured: Boolean(String(env.AI_BASE_URL || '').trim() && String(env.AI_MODEL || '').trim()), maxUploadBytes: MAX_UPLOAD_BYTES,
-          accessMode: 'public-demo',
+          authMode: supabaseStoreConfigured ? 'supabase' : env.NODE_ENV === 'production' ? 'unconfigured' : 'local-development',
+          ...(supabaseStoreConfigured ? { supabaseUrl: String(env.SUPABASE_URL).trim(), supabaseAnonKey: String(env.SUPABASE_ANON_KEY).trim() } : {}),
         });
       }
       if (request.method === 'GET' && ['/','/index.html','/app.js','/styles.css'].includes(url.pathname)) {
@@ -107,8 +124,45 @@ function createApplication({ env = process.env, store, processDocument } = {}) {
         return response.end(await require('node:fs/promises').readFile(path.join(__dirname, '..', 'public', filename)));
       }
 
+      if (request.method === 'POST' && url.pathname === '/api/auth/local') {
+        if (env.NODE_ENV === 'production' || String(env.SUPABASE_URL || '').trim()) return json(response, 404, { error: 'Not found.' });
+        const body = JSON.parse((await readBody(request, 16_384)).toString('utf8'));
+        const email = String(body.email || '').trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)) return json(response, 400, { error: 'Enter a valid email address.' });
+        const id = createHash('sha256').update(email).digest('hex').slice(0, 32);
+        return json(response, 200, { accessToken: issueLocalToken({ id: `local-${id}`, email }, String(env.APP_SECRET || 'development-only-change-me')) });
+      }
+
+      let actor;
+      const authorization = request.headers.authorization || '';
+      if (!authorization.startsWith('Bearer ')) return json(response, 401, { error: 'Authentication required.' });
+      const token = authorization.slice(7);
+      if (supabaseAuthConfigured) {
+        const authResponse = await fetchImpl(`${String(env.SUPABASE_URL).trim().replace(/\/$/u, '')}/auth/v1/user`, {
+          headers: { apikey: String(env.SUPABASE_ANON_KEY).trim(), authorization: `Bearer ${token}` },
+        });
+        if (!authResponse.ok) return json(response, 401, { error: 'Invalid or expired sign-in.' });
+        const user = await authResponse.json();
+        if (!user.id || !user.email) return json(response, 401, { error: 'Authenticated account has no email address.' });
+        actor = { id: user.id, email: user.email };
+      } else {
+        if (env.NODE_ENV === 'production') return json(response, 503, { error: 'Production authentication is not configured.' });
+        actor = verifyLocalToken(token, String(env.APP_SECRET || 'development-only-change-me'));
+        if (!actor) return json(response, 401, { error: 'Invalid or expired sign-in.' });
+      }
+
+      const membership = await storage.resolveBusiness({ userId: actor.id, email: actor.email });
+      const businessId = membership.businessId;
+      const role = ['owner', 'reviewer', 'employee'].includes(membership.role) ? membership.role : 'owner';
+      const canReview = role === 'owner' || role === 'reviewer';
+      const employeeCanSee = (document) => role !== 'employee'
+        || (document?.workflow === 'claim' && document.uploadedBy === actor.id);
+
+      if (request.method === 'GET' && url.pathname === '/api/session') return json(response, 200, { role });
+
       if (request.method === 'GET' && url.pathname === '/api/master-data') return json(response, 200, await storage.getMasterData(businessId));
       if (request.method === 'PUT' && url.pathname === '/api/master-data') {
+        if (role !== 'owner') return json(response, 403, { error: 'Only a business owner can change company reference data.' });
         const body = JSON.parse((await readBody(request, 1_000_000)).toString('utf8'));
         return json(response, 200, await storage.saveMasterData(businessId, body));
       }
@@ -119,8 +173,10 @@ function createApplication({ env = process.env, store, processDocument } = {}) {
         if (!ALLOWED_EXTENSIONS.has(extension)) return json(response, 415, { error: 'Upload a CSV, TSV, TXT, PDF, PNG, JPG, JPEG, or WEBP file.' });
         const requestedWorkflow = String(request.headers['x-workflow'] || 'auto').toLowerCase();
         if (!['auto', 'purchasing', 'claim'].includes(requestedWorkflow)) return json(response, 400, { error: 'Choose automatic routing, purchasing, or employee claim.' });
+        if (role === 'employee' && requestedWorkflow !== 'claim') return json(response, 403, { error: 'Employee accounts can submit employee claims only.' });
         const routeMode = requestedWorkflow === 'auto' ? 'automatic' : 'manual';
         const workflow = requestedWorkflow === 'auto' ? 'purchasing' : requestedWorkflow;
+        if (role === 'employee' && !decodeHeader(request.headers['x-claim-purpose'] || '').trim()) return json(response, 400, { error: 'Add the employee claim purpose before uploading.' });
         if (processingQueue.length >= 100) return json(response, 503, { error: 'The document queue is full. Try again shortly.' });
         const bytes = await readBody(request);
         if (!bytes.length) return json(response, 400, { error: 'The uploaded file is empty.' });
@@ -155,19 +211,23 @@ function createApplication({ env = process.env, store, processDocument } = {}) {
 
       if (request.method === 'GET' && url.pathname === '/api/jobs') {
         const jobs = await storage.listRecentJobs(businessId);
-        return json(response, 200, jobs);
+        if (role !== 'employee') return json(response, 200, jobs);
+        const visibleJobs = [];
+        for (const job of jobs) if (employeeCanSee(await storage.getDocument(businessId, job.documentId))) visibleJobs.push(job);
+        return json(response, 200, visibleJobs);
       }
       const jobMatch = url.pathname.match(/^\/api\/jobs\/([a-zA-Z0-9-]+)$/u);
       if (request.method === 'GET' && jobMatch) {
         const job = await storage.getJob(businessId, jobMatch[1]);
         if (!job) return json(response, 404, { error: 'Job not found.' });
+        if (!employeeCanSee(await storage.getDocument(businessId, job.documentId))) return json(response, 404, { error: 'Job not found.' });
         return json(response, 200, job);
       }
 
       const eventsMatch = url.pathname.match(/^\/api\/jobs\/([a-zA-Z0-9-]+)\/events$/u);
       if (request.method === 'GET' && eventsMatch) {
         const job = await storage.getJob(businessId, eventsMatch[1]);
-        if (!job) return json(response, 404, { error: 'Job not found.' });
+        if (!job || !employeeCanSee(await storage.getDocument(businessId, job.documentId))) return json(response, 404, { error: 'Job not found.' });
         const events = await storage.getEvents(businessId, eventsMatch[1]);
         if (!events) return json(response, 404, { error: 'Job not found.' });
         response.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
@@ -177,11 +237,13 @@ function createApplication({ env = process.env, store, processDocument } = {}) {
       }
 
       if (request.method === 'GET' && url.pathname === '/api/documents') {
-        return json(response, 200, (await storage.listDocuments(businessId)).map(publicDocument));
+        return json(response, 200, (await storage.listDocuments(businessId)).filter(employeeCanSee).map(publicDocument));
       }
       if (request.method === 'GET' && url.pathname === '/api/issues') {
         const issues = await storage.listIssues(businessId);
-        return json(response, 200, issues);
+        if (role !== 'employee') return json(response, 200, issues);
+        const visibleIds = new Set((await storage.listDocuments(businessId)).filter(employeeCanSee).map((item) => item.id));
+        return json(response, 200, issues.filter((issue) => visibleIds.has(issue.documentId)));
       }
 
       const reprocessMatch = url.pathname.match(/^\/api\/documents\/([a-zA-Z0-9-]+)\/reprocess$/u);
@@ -190,6 +252,7 @@ function createApplication({ env = process.env, store, processDocument } = {}) {
         const job = document ? await storage.getJobForDocument?.(businessId, document.id) : null;
         const bytes = document ? await storage.getUpload(businessId, document.id) : null;
         if (!document || !job || !bytes) return json(response, 404, { error: 'Document, processing job, or stored upload not found.' });
+        if (!employeeCanSee(document)) return json(response, 404, { error: 'Document not found.' });
         if (document.status === 'approved') return json(response, 409, { error: 'Approved documents cannot be reprocessed. Create a correction workflow with a reviewer.' });
         if (processingQueue.length >= 100) return json(response, 503, { error: 'The document queue is full. Try again shortly.' });
         await storage.updateDocumentStatus?.(businessId, document.id, 'queued');
@@ -203,6 +266,7 @@ function createApplication({ env = process.env, store, processDocument } = {}) {
         const body = JSON.parse((await readBody(request, 64_000)).toString('utf8'));
         const existingDocument = await storage.getDocument(businessId, correctionMatch[1]);
         if (!existingDocument) return json(response, 404, { error: 'Document not found.' });
+        if (!employeeCanSee(existingDocument)) return json(response, 404, { error: 'Document not found.' });
         if (existingDocument.status === 'approved') return json(response, 409, { error: 'Approved documents cannot be edited.' });
         const document = await storage.recordCorrection(businessId, correctionMatch[1], actor.id, body);
         if (!document) return json(response, 404, { error: 'Document not found.' });
@@ -211,6 +275,7 @@ function createApplication({ env = process.env, store, processDocument } = {}) {
 
       const resolveMatch = url.pathname.match(/^\/api\/issues\/([a-zA-Z0-9-]+)\/resolve$/u);
       if (request.method === 'POST' && resolveMatch) {
+        if (!canReview) return json(response, 403, { error: 'Only a reviewer or owner can resolve issues.' });
         const body = JSON.parse((await readBody(request, 16_384)).toString('utf8'));
         const issue = await storage.resolveIssue(businessId, resolveMatch[1], actor.id, body.reason);
         if (!issue) return json(response, 404, { error: 'Issue not found.' });
@@ -219,6 +284,7 @@ function createApplication({ env = process.env, store, processDocument } = {}) {
 
       const approveMatch = url.pathname.match(/^\/api\/documents\/([a-zA-Z0-9-]+)\/approve$/u);
       if (request.method === 'POST' && approveMatch) {
+        if (!canReview) return json(response, 403, { error: 'Only a reviewer or owner can approve documents.' });
         const document = await storage.approveDocument(businessId, approveMatch[1], actor.id);
         if (!document) return json(response, 404, { error: 'Document not found.' });
         return json(response, 200, publicDocument(document));
@@ -229,8 +295,12 @@ function createApplication({ env = process.env, store, processDocument } = {}) {
         let rows;
         if (kind === 'issues') {
           rows = await storage.listIssues(businessId);
+          if (role === 'employee') {
+            const visibleIds = new Set((await storage.listDocuments(businessId)).filter(employeeCanSee).map((item) => item.id));
+            rows = rows.filter((issue) => visibleIds.has(issue.documentId));
+          }
         }
-        else if (kind === 'records') rows = (await storage.listDocuments(businessId)).map((document) => flattenRecord(document));
+        else if (kind === 'records') rows = (await storage.listDocuments(businessId)).filter(employeeCanSee).map((document) => flattenRecord(document));
         else return json(response, 400, { error: 'Export kind must be records or issues.' });
         response.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="tutupbuku-${kind}.csv"`, 'cache-control': 'no-store' });
         return response.end(toCsv(rows));
@@ -252,7 +322,6 @@ function createApplication({ env = process.env, store, processDocument } = {}) {
     server,
     async listen(port = Number(env.PORT) || 3000, host = env.HOST || '0.0.0.0') {
       await storage.init?.();
-      await storage.resolveDemoBusiness(businessId);
       const address = await new Promise((resolve, reject) => {
         server.once('error', reject);
         server.listen(port, host, () => { server.off('error', reject); resolve(server.address()); });
@@ -356,4 +425,4 @@ if (require.main === module) {
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => app.close().finally(() => process.exit()));
 }
 
-module.exports = { createApplication, processJob, toCsv, assertProductionConfiguration };
+module.exports = { createApplication, processJob, verifyLocalToken, issueLocalToken, toCsv, assertProductionConfiguration };

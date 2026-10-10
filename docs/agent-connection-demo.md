@@ -5,12 +5,12 @@ This demo provides a normal HTML page with a button that makes one real AI reque
 ```text
 Browser on your laptop
   -> ngrok HTTPS endpoint
-  -> demo backend on the AWS VM, port 3001
+  -> authenticated demo backend on the AWS VM, port 3001
   -> dedicated private CodeBuddy gateway on the same VM, port 8081
   -> final AI reply displayed on the page
 ```
 
-This is a fixed-response connection test. It does not review accounting records, call TutupBuku MCP tools, or test parallel agents. The website requires no visitor login. Accounting approval requirements remain enforced.
+This is a fixed-response connection test. It does not review accounting records, call TutupBuku MCP tools, or test parallel agents. The existing accounting application and its approval requirements are unchanged.
 
 ## 1. Get the new files onto the VM
 
@@ -19,7 +19,7 @@ Your laptop changes must be committed and pushed to the GitHub repository before
 In your **AWS Instance Connect Ubuntu terminal**, run:
 
 ```bash
-cd ~/dormathon
+cd ~/tutupbuku
 git status --short
 ```
 
@@ -32,24 +32,26 @@ node --version
 codebuddy --version
 ```
 
-Expected: all three files exist, Node is **v22 or newer**, and CodeBuddy prints its installed version. Use your actual repository path if it is not `~/dormathon`. No `npm install` is needed for the demo; it uses Node built-ins.
+Expected: all three files exist, Node is **v22 or newer**, and CodeBuddy prints its installed version. Use your actual repository path if it is not `~/tutupbuku`. No `npm install` is needed for the demo; it uses Node built-ins.
 
 Keep the same Ubuntu user and international CLI login that completed your earlier successful AI test. Do not start CodeBuddy using `sudo` or copy desktop session tokens. This implementation targets the CodeBuddy 2.164.0 gateway contract; another version needs its own live verification. See the [official HTTP API documentation](https://www.codebuddy.ai/docs/cli/http-api).
 
-## 2. Set the private gateway password
+## 2. Create two separate passwords
 
 ```bash
 cp agent-demo.env.example .env.agent-demo
 chmod 600 .env.agent-demo
 openssl rand -hex 24
+openssl rand -hex 24
 nano .env.agent-demo
 ```
 
-Use the generated value for `CODEBUDDY_GATEWAY_PASSWORD`. It protects the private CodeBuddy gateway and stays on the backend. No username or password is required to open the website.
+Use the first generated value for `AGENT_DEMO_PASSWORD` and the second for `CODEBUDDY_GATEWAY_PASSWORD`. They must be different. The first is the browser/operator login password; the second protects the private CodeBuddy gateway.
 
 Keep these values in the file:
 
 ```dotenv
+AGENT_DEMO_USER=demo
 AGENT_DEMO_HOST=127.0.0.1
 AGENT_DEMO_PORT=3001
 AGENT_DEMO_GATEWAY_URL=http://127.0.0.1:8081
@@ -64,7 +66,7 @@ In nano, save with **Ctrl+O**, then **Enter**, and exit with **Ctrl+X**. Do not 
 In the first Instance Connect terminal:
 
 ```bash
-cd ~/dormathon
+cd ~/tutupbuku
 node --env-file=.env.agent-demo scripts/start-agent-demo-gateway.js
 ```
 
@@ -85,7 +87,7 @@ Use this dedicated gateway for the connection test, even if your existing accoun
 Open a **second Instance Connect terminal**:
 
 ```bash
-cd ~/dormathon
+cd ~/tutupbuku
 node --env-file=.env.agent-demo src/agent-demo/server.js
 ```
 
@@ -95,7 +97,7 @@ Expected startup message:
 TutupBuku agent test: http://127.0.0.1:3001
 ```
 
-Leave this terminal running. The page and fixed demo API routes open without a visitor login. Only the fixed connection-test routes are exposed; this service does not proxy CodeBuddy's filesystem, terminal, process, or general agent APIs.
+Leave this terminal running. Every page and API route requires the separate operator login. Only the fixed connection-test routes are exposed; this service does not proxy CodeBuddy's filesystem, terminal, process, or general agent APIs.
 
 ## 5. Publish this demo through ngrok
 
@@ -121,7 +123,10 @@ Do not add EC2 inbound rules for ports **3001 or 8081**. Both services bind to l
 
 ## 6. Click the button
 
-Open the displayed **HTTPS URL on your laptop**. If ngrok displays its visitor notice, continue to the site. The page opens directly without asking for a username or password.
+Open the displayed **HTTPS URL on your laptop**. If ngrok displays its visitor notice, continue to the site. The browser then asks for:
+
+- Username: `demo`.
+- Password: the `AGENT_DEMO_PASSWORD` value from your VM file.
 
 Click **Run AWS agent test** once. A queued/running job means the backend accepted the request; it is not proof that the model responded. Success requires the page to show:
 
@@ -137,8 +142,8 @@ The service permits one active test and up to 20 new tests per hour. It keeps a 
 
 ## Troubleshooting
 
-- **Needs setup:** configure `CODEBUDDY_GATEWAY_PASSWORD` in `.env.agent-demo`, then restart the relevant process.
-- **Authentication failed:** the backend and dedicated gateway must use the same `CODEBUDDY_GATEWAY_PASSWORD`. The browser does not use a login password.
+- **Needs setup:** configure both passwords in `.env.agent-demo`, then restart the relevant process.
+- **Authentication failed:** the backend and dedicated gateway must use the same `CODEBUDDY_GATEWAY_PASSWORD`. The browser must use the other password.
 - **Status unknown/unavailable:** use **Refresh status** to check the existing job. Do not immediately start a second test.
 - **Stream unavailable, failed, or timed out:** the outcome is unconfirmed. CodeBuddy's completed run stream cannot necessarily be replayed; a late stream subscription can return 404. Check the VM before retrying. The client attempts cancellation of its known failed/timed-out run; cancellation is best effort, and automatic credit-consuming resubmission is disabled.
 - **Public POST rejected:** ordinarily keep `AGENT_DEMO_PUBLIC_ORIGIN` unset. If your proxy rewrites Host, set it to the exact ngrok HTTPS origin, with no path, then restart the backend. Update it when the tunnel URL changes.
@@ -154,7 +159,7 @@ sudo apt-get install -y tmux
 tmux new -s tutupbuku-demo
 ```
 
-Start the gateway in the first window. Press **Ctrl+B**, then **C** to create a window for the backend; repeat for ngrok. Change to `~/dormathon` before each Node command. Press **Ctrl+B**, then **D** to detach. Reconnect later with:
+Start the gateway in the first window. Press **Ctrl+B**, then **C** to create a window for the backend; repeat for ngrok. Change to `~/tutupbuku` before each Node command. Press **Ctrl+B**, then **D** to detach. Reconnect later with:
 
 ```bash
 tmux attach -t tutupbuku-demo

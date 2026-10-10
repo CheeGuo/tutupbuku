@@ -33,15 +33,12 @@ class SupabaseStore {
   }
 
   rest(table, query = '') { return `/rest/v1/${table}${query ? `?${query}` : ''}`; }
-  async resolveDemoBusiness(businessId) {
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(businessId)) {
-      throw new TypeError('The demo business ID must be a UUID.');
-    }
-    await this.request(this.rest('businesses', 'on_conflict=id'), {
-      method: 'POST', body: { id: businessId, name: 'TutupBuku hackathon demo' },
-      headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' },
-    });
-    return { businessId };
+  async resolveBusiness({ userId, email }) {
+    const result = await this.request('/rest/v1/rpc/resolve_business_for_user', { method: 'POST', body: { p_user_id: userId, p_email: email } });
+    const row = Array.isArray(result) ? result[0] : result;
+    const businessId = row?.business_id || row?.businessId;
+    if (!businessId) throw new Error('No business membership could be resolved for the authenticated user.');
+    return { businessId, userId, email, role: row?.role || 'owner' };
   }
 
   async putUpload(businessId, documentId, filename, bytes) {

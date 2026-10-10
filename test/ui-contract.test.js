@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-test('operator UI provides upload, records, issue review, and business setup views', () => {
+test('operator UI provides authenticated upload, records, issue review, and business setup views', () => {
   const root = path.join(__dirname, '..', 'public');
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   const script = fs.readFileSync(path.join(root, 'app.js'), 'utf8');

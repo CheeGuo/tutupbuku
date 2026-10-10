@@ -3,7 +3,9 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { createAgentDemo } = require('../src/agent-demo/server');
 
+const DEMO_PASSWORD = 'operator-test-password-123';
 const GATEWAY_PASSWORD = 'private-gateway-password-456';
+const auth = `Basic ${Buffer.from(`demo:${DEMO_PASSWORD}`).toString('base64')}`;
 
 async function setup(t, gatewayHandler, options = {}) {
   const gateway = http.createServer(gatewayHandler);
@@ -12,6 +14,7 @@ async function setup(t, gatewayHandler, options = {}) {
   const demo = createAgentDemo({
     ...options,
     env: {
+      AGENT_DEMO_PASSWORD: DEMO_PASSWORD,
       CODEBUDDY_GATEWAY_PASSWORD: GATEWAY_PASSWORD,
       AGENT_DEMO_GATEWAY_URL: `http://127.0.0.1:${gateway.address().port}`,
       ...options.env,
@@ -24,6 +27,7 @@ async function setup(t, gatewayHandler, options = {}) {
 
 function requestHeaders(base, key = 'connection-check-001') {
   return {
+    authorization: auth,
     'content-type': 'application/json',
     'x-tutupbuku-request': '1',
     'idempotency-key': key,
@@ -33,7 +37,7 @@ function requestHeaders(base, key = 'connection-check-001') {
 
 async function waitForJob(base, id) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const response = await fetch(`${base}/api/demo/jobs/${id}`);
+    const response = await fetch(`${base}/api/demo/jobs/${id}`, { headers: { authorization: auth } });
     const { job } = await response.json();
     if (['completed', 'failed'].includes(job.status)) return job;
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -41,26 +45,26 @@ async function waitForJob(base, id) {
   throw new Error('The demo job never reached a terminal state.');
 }
 
-test('demo needs no visitor password and keeps the gateway URL private', () => {
-  assert.doesNotThrow(() => createAgentDemo({ env: {} }));
-  assert.throws(() => createAgentDemo({ env: { AGENT_DEMO_GATEWAY_URL: 'https://public-agent.example/' } }), /loopback|private/u);
-  assert.throws(() => createAgentDemo({ env: { AGENT_DEMO_GATEWAY_URL: 'http://user:password@127.0.0.1:8080/' } }), /credentials/u);
+test('demo requires an operator password and a private gateway URL', () => {
+  assert.throws(() => createAgentDemo({ env: {} }), /AGENT_DEMO_PASSWORD/u);
+  assert.throws(() => createAgentDemo({ env: { AGENT_DEMO_PASSWORD: DEMO_PASSWORD, AGENT_DEMO_GATEWAY_URL: 'https://public-agent.example/' } }), /loopback|private/u);
+  assert.throws(() => createAgentDemo({ env: { AGENT_DEMO_PASSWORD: DEMO_PASSWORD, AGENT_DEMO_GATEWAY_URL: 'http://user:password@127.0.0.1:8080/' } }), /credentials/u);
 });
 
-test('page and status open without login and do not expose gateway credentials or proxy agent endpoints', async (t) => {
+test('page and APIs require authentication and do not expose gateway credentials or proxy agent endpoints', async (t) => {
   let calls = 0;
   const { base } = await setup(t, (_request, response) => { calls += 1; response.end('{}'); });
-  for (const path of ['/', '/agent-connection.js', '/api/demo/status']) {
+  for (const path of ['/', '/agent-connection.js', '/api/demo/status', '/api/demo/jobs']) {
     const response = await fetch(`${base}${path}`);
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get('www-authenticate'), null);
+    assert.equal(response.status, 401);
+    assert.match(response.headers.get('www-authenticate'), /Basic/u);
   }
-  const response = await fetch(`${base}/api/demo/status`);
+  const response = await fetch(`${base}/api/demo/status`, { headers: { authorization: auth } });
   const body = await response.text();
   assert.equal(response.status, 200);
   assert.doesNotMatch(body, /private-gateway-password|AGENT_DEMO_GATEWAY_URL/u);
   assert.equal(calls, 0, 'loading the page/status must never spend model credits');
-  const forbidden = await fetch(`${base}/api/v1/process/start`);
+  const forbidden = await fetch(`${base}/api/v1/process/start`, { headers: { authorization: auth } });
   assert.equal(forbidden.status, 404);
 });
 
@@ -125,7 +129,7 @@ test('missing AI credentials remains needs setup and never calls a model', async
   const { base } = await setup(t, (_request, response) => { calls += 1; response.end('{}'); }, {
     env: { CODEBUDDY_GATEWAY_PASSWORD: '' },
   });
-  const configuration = await fetch(`${base}/api/demo/status`).then((response) => response.json());
+  const configuration = await fetch(`${base}/api/demo/status`, { headers: { authorization: auth } }).then((response) => response.json());
   assert.equal(configuration.configured, false);
   const response = await fetch(`${base}/api/demo/jobs`, { method: 'POST', headers: requestHeaders(base), body: '{}' });
   assert.equal(response.status, 503);
@@ -181,7 +185,7 @@ test('shutdown never dispatches a queued credit-consuming request', async (t) =>
   let executeQueued;
   let calls = 0;
   const demo = createAgentDemo({
-    env: { CODEBUDDY_GATEWAY_PASSWORD: GATEWAY_PASSWORD },
+    env: { AGENT_DEMO_PASSWORD: DEMO_PASSWORD, CODEBUDDY_GATEWAY_PASSWORD: GATEWAY_PASSWORD },
     scheduleRun: (callback) => { executeQueued = callback; },
     fetchImpl: async () => { calls += 1; return new Response('{}'); },
   });
