@@ -96,6 +96,7 @@ def run_test(prompt, timeout):
     stream_url = base + "/api/v1/runs/" + urllib.parse.quote(run_id, safe="") + "/stream"
     request = urllib.request.Request(stream_url, headers=headers)
     with opener.open(request, timeout=max(1, deadline - time.monotonic())) as response:
+        print("RAW RUN RESPONSE:\n" + raw_body, flush=True)
         if "text/event-stream" not in response.headers.get("Content-Type", ""):
             raise RuntimeError("The gateway did not return an AI event stream.")
         event, data, received = "message", [], 0

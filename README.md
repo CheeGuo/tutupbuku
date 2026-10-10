@@ -18,12 +18,22 @@ The agents propose and explain. Application code checks required values, arithme
 
 Requires Node.js 22 or newer. The app uses Node built-ins and does not require npm packages.
 
+Start the API from the repository root:
+
 ```powershell
 Copy-Item .env.example .env
 node --env-file=.env src/server.js
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Local development sign-in asks only for an email and is not suitable for a shared or public deployment. Local data is written to `.tutupbuku-data/state.json` and `.tutupbuku-data/uploads/`; other existing files in that folder are left alone. This directory is ignored by Git.
+In a second terminal, run the frontend:
+
+```powershell
+Set-Location frontend
+npm install
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` to the Node service on port 3000. To serve the app from port 3000, build it with `npm run build` from `frontend` first. Local development sign-in asks only for an email and is not suitable for a shared or public deployment. Local data is written to `.tutupbuku-data/state.json` and `.tutupbuku-data/uploads/`; other existing files in that folder are left alone. This directory is ignored by Git.
 
 CSV, TSV, and text files work without system OCR tools. PDF and image OCR requires Poppler and Tesseract. Set `OCR_LANGUAGES=eng+msa` when Malay trained data is installed; the Docker image includes English and Malay language data and uses both by default.
 
@@ -52,7 +62,7 @@ These commands work without installing npm packages. The smoke test uses tempora
 
 ## Production setup
 
-Production requires `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`. The service-role key stays server-side and must be stored as a Secrets Manager secret in ECS. Apply `supabase/migrations/001_agentic_intake.sql` to a new Supabase project before starting the service; review the migration and backup policy with your database owner. Create a Supabase Auth user or enable permitted email signup. See [AWS deployment notes](infra/aws/README.md).
+Production requires `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`. The service-role key stays server-side and must be stored as a Secrets Manager secret in ECS. Apply `supabase/migrations/001_agentic_intake.sql` and then `supabase/migrations/002_review_and_versioning.sql` to a new Supabase project before starting the service; review the migrations and backup policy with your database owner. Create a Supabase Auth user or enable permitted email signup. See [AWS deployment notes](infra/aws/README.md).
 
 Membership roles are `owner`, `reviewer`, and `employee`. An employee can upload and see only their own claims; a reviewer or owner can resolve findings and approve. Only owners can edit company reference data. To add a registered Supabase Auth user, a project administrator must insert that user's Auth UUID and the target business UUID into `public.business_memberships` with the chosen role. Membership administration/invitations are not exposed in the app yet. Local development sign-in creates isolated owner-only workspaces.
 
