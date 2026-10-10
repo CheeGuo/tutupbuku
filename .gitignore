@@ -10,3 +10,4 @@ __pycache__/
 *.py[cod]
 .dist/
 .superpowers/
+.tutupbuku-job-state/

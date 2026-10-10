@@ -13,6 +13,8 @@
     "test": "node --test",
     "check": "node --check src/server.js && node --check src/processor.js && node --check src/domain/schema.js && node --check src/domain/audit.js && node --check src/agents/skills.js && node --check src/agents/runner.js && node --check src/ai/provider.js && node --check src/ingest/csv.js && node --check src/ingest/ocr.js && node --check src/workflow/concurrency.js && node --check src/workflow/orchestrator.js && node --check src/storage/local-store.js && node --check src/storage/supabase-store.js && node --check public/app.js && node --check scripts/smoke.js",
     "check:agent-demo": "node --check src/agent-demo/server.js && node --check src/agent-demo/codebuddy-client.js && node --check public/agent-connection.js && node --check scripts/start-agent-demo-gateway.js",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "start:workbuddy": "node --env-file=.env.workbuddy scripts/start-workbuddy-gateway.js",
+    "check:workbuddy": "node --check scripts/start-workbuddy-gateway.js"
   }
 }
