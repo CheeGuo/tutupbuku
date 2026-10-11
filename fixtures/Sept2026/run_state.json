@@ -104,6 +104,21 @@
     }
   },
   "rule_version": "2026-10-10.1",
-  "source_hashes": {},
+  "source_hashes": {
+    "bank.csv": "6c7360413b16d6c8bfb40bbea3efb69f8b297f765080d541fe89a5553ffdb3b4",
+    "bank_metadata.json": "1057304459a89c6231fe98bca6c41ad721d7b4853261d0ca9195761f41158285",
+    "profile.md": "8af56d90278436ad535aa0fbd9fbad9fe86ec2a8de3cae7437528888e1bdaa84",
+    "receipts/R001.png": "590250f9206b35c78d69cc4a96f2a684d200327bb5f78fff7a53d89ce0936687",
+    "receipts/R002.png": "e58aa840b59180c42d059718c44e8805ccc52bbcceba918b048b245e51354092",
+    "receipts/R003.png": "3a44b55fd8198fdaff50546bd060ae153cc9c25d89b3da926619c1d3f9d8d0d9",
+    "receipts/R004.png": "b1c02b8c2e70e6b634f1263f660aed5db0c25eca1b7d3c049f9570c0cdf57b8b",
+    "receipts/R005.png": "52989c27f751a95cccbf1f3e1be8ebfe762922e38dbb4b8d93355fb14faebdab",
+    "receipts/R006.png": "137202b1dcad4ca13a375cb69f7aa3cb6b4d52233b58e26582d8419c244fd55f",
+    "receipts/R007.png": "bbad83a09f7a149e18e265c9775101387efe38f98c7ae83b39675be918d7c698",
+    "receipts/R008.png": "facedb2dd78e8c4eb9ae741dc5cb40bfad360751405944f7b6a49cc4687714f4",
+    "receipts/R009.png": "355d2857c959530649bec9ed59df334bbeeabd819cdf388937adc95c4ae653e6",
+    "receipts/R010.png": "60dbcaf525933a520c2fde53d1e4347ce55fb4546800d3e0e6a258c833dc046e",
+    "sales.csv": "b1d8466a83fb739a792675abd2c03b8598af193fe283f48aaca440f984df1e9f"
+  },
   "state_version": 1
 }

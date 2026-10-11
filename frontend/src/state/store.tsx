@@ -1,24 +1,27 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { AuditEntry, Claim, DocLink, DocRecord, Issue, IssueStatus, Toast } from '../types';
-import { REVIEWER, SEED_AUDIT, SEED_CLAIMS, SEED_DOCS, SEED_ISSUES, SEED_LINKS } from '../data/dummy';
+import { REVIEWER } from '../data/dummy';
 import { csvCell, docAmount, docDate, docNumber, docParty, docTax, field, lineTotal, poIdOf, repriceInvoice } from '../lib/docs';
 import { decimalFromSen } from '../lib/format';
 import { checkInvoice } from '../lib/verify';
 
 /* One shared record set for Live Execution, Documents and Action Items.
-   The source of truth is the backend (/api/records): Supabase Postgres via the Prisma schema, or a file on the
-   server when no database is configured. localStorage only paints the page before the backend answers. */
+   The only source is the backend (/api/records), which reads Supabase Postgres through the Prisma schema.
+   The page starts empty and shows exactly what retrieveRecords() returns: no sample data, no browser copy. */
 
 interface State { docs: DocRecord[]; links: DocLink[]; claims: Claim[]; issues: Issue[]; audit: AuditEntry[] }
-const KEY = 'tutupbuku.records.v4';
-const SEED: State = { docs: SEED_DOCS, links: SEED_LINKS, claims: SEED_CLAIMS, issues: SEED_ISSUES, audit: SEED_AUDIT };
+const EMPTY: State = { docs: [], links: [], claims: [], issues: [], audit: [] };
+const OLD_BROWSER_COPY = 'tutupbuku.records.v4';   // earlier versions cached records here; removed on start
 
-function load(): State {
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    if (raw) { const parsed = JSON.parse(raw) as State; if (parsed.docs && parsed.links && parsed.claims && parsed.issues && parsed.audit) return parsed; }
-  } catch { /* fall back to the seed */ }
-  return SEED;
+/** Retrieve the saved records (and their version) from the backend. */
+export async function retrieveRecords(): Promise<{ version: number; records: State; storage: { mode: StorageState['mode'] } }> {
+  const response = await fetch('/api/records', { cache: 'no-store' }).catch(() => null);
+  const body = response ? await response.json().catch(() => null) : null;
+  // No JSON body means the request never reached TutupBuku (for example the Vite proxy could not connect).
+  if (!response || !body) throw new Error('The backend is not running or cannot be reached. Start it with: py -3.13 -m tutupbuku.app --web-only --frontend');
+  if (!response.ok) throw new Error(body.error || `Record service error ${response.status}`);
+  const records = body.records || {};
+  return { version: body.version, storage: body.storage, records: { docs: records.docs || [], links: records.links || [], claims: records.claims || [], issues: records.issues || [], audit: records.audit || [] } };
 }
 
 /** Sequential ids (ISS-010, ISS-011…) continuing from the highest existing number. */
@@ -29,19 +32,18 @@ export const allocIds = (prefix: string, existing: string[], count: number) => {
 
 /** Where the records are saved, as reported by the backend. */
 export interface StorageState { mode: 'loading' | 'supabase' | 'local' | 'offline'; ok: boolean; message?: string }
-const KINDS = ['docs', 'links', 'claims', 'issues', 'audit'] as const;
 
 export interface Bundle { docs: DocRecord[]; links: DocLink[]; claims: Claim[]; issues: Issue[]; note: string; entityId: string }
 
 interface DataApi extends State {
   storage: StorageState;
+  /** Fetch the records from Supabase again and show them (discards nothing that is already saved). */
+  reload: () => Promise<void>;
   toasts: Toast[];
   dismissToast: (id: number) => void;
   latest: React.MutableRefObject<State>;
   openIssuesFor: (docId: string) => Issue[];
   commit: (bundle: Bundle, actor: string) => void;
-  /** Demo re-runs: drop an earlier copy of an invoice (and its links and issues) before the same file is processed again. */
-  discardInvoice: (invoiceNo: string) => void;
   setIssueStatus: (issueId: string, status: IssueStatus, note?: string) => void;
   confirmField: (issueId: string, docId: string, key: string, value: string) => void;
   correctPrice: (issueId: string, invoiceId: string, prices: Record<string, number>) => 'cleared' | 'still-differs';
@@ -59,7 +61,7 @@ const ACTIVE: IssueStatus[] = ['OPEN', 'UNDER_REVIEW'];
 const isActive = (i: Issue) => ACTIVE.includes(i.status);
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<State>(load);
+  const [state, setState] = useState<State>(EMPTY);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const latest = useRef(state);
   latest.current = state;
@@ -72,12 +74,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const inflight = useRef(false);
   const queued = useRef(false);
 
-  const fetchRecords = useCallback(async () => {
-    const response = await fetch('/api/records');
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || `Record service error ${response.status}`);
-    return body as { version: number; records: State | null; storage: { mode: StorageState['mode'] } };
-  }, []);
+  const fetchRecords = retrieveRecords;
 
   const push = useCallback(async (records: State): Promise<void> => {
     if (inflight.current) { queued.current = true; return; }
@@ -88,7 +85,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       if (response.status === 409) {
         const fresh = await fetchRecords();
         version.current = fresh.version;
-        if (fresh.records) { skipSave.current = true; setState(fresh.records); }
+        skipSave.current = true; setState(fresh.records);
         toast('These records were changed elsewhere, so the latest saved version was loaded. Repeat your last change if it is missing.', 'info');
         return;
       }
@@ -103,27 +100,26 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fetchRecords]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const loaded = await fetchRecords();
-        if (cancelled) return;
-        version.current = loaded.version;
-        const empty = !loaded.records || KINDS.every(k => !(loaded.records![k] || []).length);
-        setStorage({ mode: loaded.storage.mode, ok: true });
-        ready.current = true;
-        if (empty) void push(latest.current);              // first run: store the current (seed) records
-        else { skipSave.current = true; setState(loaded.records!); }
-      } catch (e) {
-        if (!cancelled) setStorage({ mode: 'offline', ok: false, message: (e as Error).message });
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+  const reload = useCallback(async () => {
+    setStorage(s => ({ ...s, mode: s.ok ? s.mode : 'loading' }));
+    try {
+      const loaded = await fetchRecords();
+      version.current = loaded.version;
+      skipSave.current = true;            // what came from the server is not echoed back
+      setState(loaded.records);
+      setStorage({ mode: loaded.storage.mode, ok: true });
+      ready.current = true;               // edits save only after a successful load
+    } catch (e) {
+      setStorage({ mode: 'offline', ok: false, message: (e as Error).message });
+    }
+  }, [fetchRecords]);
 
   useEffect(() => {
-    try { window.localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* storage unavailable: session only */ }
+    try { window.localStorage.removeItem(OLD_BROWSER_COPY); } catch { /* storage unavailable */ }
+    void reload();
+  }, [reload]);
+
+  useEffect(() => {
     if (!ready.current) return;
     if (skipSave.current) { skipSave.current = false; return; }
     const timer = window.setTimeout(() => void push(latest.current), 400);
@@ -158,7 +154,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   };
 
   const api = useMemo<DataApi>(() => ({
-    ...state, storage, toasts, dismissToast, latest,
+    ...state, storage, reload, toasts, dismissToast, latest,
     openIssuesFor: docId => state.issues.filter(i => i.docIds.includes(docId) && isActive(i)),
 
     commit(bundle, actor) {
@@ -168,13 +164,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       }));
     },
 
-    discardInvoice(invoiceNo) {
-      setState(s => {
-        const gone = new Set(s.docs.filter(d => d.docType === 'invoice' && docNumber(d) === invoiceNo).map(d => d.id));
-        if (!gone.size) return s;
-        return { ...s, docs: s.docs.filter(d => !gone.has(d.id)), links: s.links.filter(l => !gone.has(l.sourceId) && !gone.has(l.targetId)), issues: s.issues.filter(i => !i.docIds.some(id => gone.has(id))) };
-      });
-    },
 
     setIssueStatus(issueId, status, note = '') {
       setState(s => autoVerify(closeIssue(s, issueId, status, note.trim())));
@@ -330,7 +319,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       toast(`Exported ${rows.length} ${label}.`);
       return rows.length;
     },
-  }), [state, storage, toasts, dismissToast]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }), [state, storage, reload, toasts, dismissToast]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   function autoVerifyNew(s: State): State { return autoVerify(s); }
   return <Ctx.Provider value={api}>{children}</Ctx.Provider>;

@@ -2,8 +2,8 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import type { Claim, DocLink, DocRecord, DocType, Field, Issue, LineItem, Severity } from '../types';
 import { CHART_OF_ACCOUNTS, DEMO_INVOICE_1019 } from '../data/dummy';
 import { allocIds, useData } from '../state/store';
-import { TYPE_CONFIG, chainOf, docAmount, docDate, docNumber, docParty, fieldDisplay, lineTotal, repriceInvoice } from './docs';
-import { formatDate, formatMoney } from './format';
+import { TYPE_CONFIG, chainOf, docAmount, docDate, docNumber, docParty, field, fieldDisplay, lineTotal, poIdOf, repriceInvoice } from './docs';
+import { formatDate, formatMoney, humanStatus } from './format';
 import { checkInvoice, type Comparison, type IssueDraft } from './verify';
 
 /* Demo agent for the claim and purchasing workflows in Live Execution.
@@ -23,18 +23,25 @@ export const STARTERS: { id: Intent; group: 'Claims' | 'Purchasing'; label: stri
 export type StageState = 'queued' | 'running' | 'completed' | 'waiting' | 'failed';
 export const DEMO_STAGES = ['Receive', 'Read', 'Match', 'Verify', 'Save'] as const;
 
+/** The record's status as shown on its document card; HELD = not saved, waiting for the user's decision. */
+export type CardStatus = DocRecord['status'] | 'HELD' | 'PENDING';
+
 export type Card =
-  | { type: 'extract'; title: string; fields: { label: string; value: string; low?: boolean }[]; lines: { item: string; qty: number; unit: string; total: string }[]; sample: boolean }
+  | { type: 'extract'; title: string; fields: { label: string; value: string; low?: boolean }[]; lines: { item: string; qty: number; unit: string; total: string }[]; sample: boolean;
+      docLabel?: string; number?: string; party?: string; file?: string; pdf?: string; amounts?: { label: string; value: string; total?: boolean; low?: boolean }[];
+      status?: CardStatus; statusNote?: string; warnings?: string[]; source?: 'pdf_text' | 'ocr' }
   | { type: 'links'; title: string; basis: string; confirmed: boolean; chain: { label: string; no: string; here?: boolean }[] }
   | { type: 'compare'; po: string; rows: Comparison[] }
   | { type: 'claim'; purpose: string; plausibility: 'PLAUSIBLE' | 'NEEDS_REVIEW'; findings: string[]; category: string; confidence: number; reasoning: string; description: string }
-  | { type: 'findings'; items: { severity: Severity; title: string; typeLabel: string }[]; human: boolean }
-  | { type: 'saved'; lines: string[] }
+  | { type: 'findings'; items: { id?: string; severity: Severity; title: string; typeLabel: string }[]; human: boolean }
+  | { type: 'council'; purpose: string; result: CouncilResult }
+  | { type: 'saved'; lines: string[]; hideActionItems?: boolean }
   | { type: 'alert'; title: string; lines: string[] }
+  | { type: 'lookup'; query: string; poId: string; poNo: string; supplier: string; date: string; total: string; chain: { id: string; label: string; no: string; date: string; amount: string; status: string; pdf?: string; hit: boolean }[]; issues: { severity: Severity; title: string; status: string }[] }
   | { type: 'fix'; title: string; rows: { item: string; from: string; to: string }[]; lines: string[] };
 
 /** The record the agent is holding back until the user picks Fix now or Review later. Kept on the message so it survives a reload. */
-export interface FixContext { stepsId: string; invoiceNo: string; poNo: string; varianceId: string; prices: Record<string, number>; bundle: { doc: DocRecord; links: DocLink[]; issues: Issue[] } }
+export interface FixContext { stepsId: string; cardId?: string; invoiceNo: string; poNo: string; varianceId: string; prices: Record<string, number>; bundle: { doc: DocRecord; links: DocLink[]; issues: Issue[] } }
 
 export type Msg =
   | { id: string; kind: 'user'; text: string; files: string[] }
@@ -42,6 +49,26 @@ export type Msg =
   | { id: string; kind: 'quick'; options: { id: string; label: string }[]; used?: boolean; prompt?: string; ctx?: FixContext }
   | { id: string; kind: 'steps'; steps: { label: string; state: 'done' | 'running' | 'queued' }[] }
   | { id: string; kind: 'card'; card: Card };
+
+const TOTAL_KEYS = new Set(['grand_total', 'total', 'amount']);
+/** The document card shown after reading a file: number, party and status in the header, then facts, lines and totals. */
+function docCard(doc: DocRecord, title: string, sample = true, warnings: string[] = [], source?: ReadDocument['source']): Extract<Card, { type: 'extract' }> {
+  const number = docNumber(doc); const party = docParty(doc);
+  const low = (f: Field) => (f.confidence ?? 1) < 0.7;
+  const money = doc.fields.filter(f => f.kind === 'money');
+  const priced = doc.lines.filter(l => l.totalSen !== null);
+  type Amount = NonNullable<Extract<Card, { type: 'extract' }>['amounts']>[number];
+  const subtotal: Amount[] = priced.length && money.some(f => f.key === 'tax') ? [{ label: 'Subtotal', value: formatMoney(priced.reduce((s, l) => s + (l.totalSen ?? 0), 0)) }] : [];
+  const amounts: Amount[] = [...subtotal, ...money.map(f => ({ label: f.label, value: fieldDisplay(f), total: TOTAL_KEYS.has(f.key), low: low(f) }))]
+    .sort((a, b) => Number(Boolean(a.total)) - Number(Boolean(b.total)));
+  return {
+    type: 'extract', title, sample, warnings, source, docLabel: TYPE_CONFIG[doc.docType].label, number, party, file: doc.filename, pdf: doc.sourceUrl,
+    fields: doc.fields.filter(f => f.kind !== 'money' && fieldDisplay(f) !== number && fieldDisplay(f) !== party).map(f => ({ label: f.label, value: fieldDisplay(f), low: low(f) })),
+    amounts,
+    lines: doc.lines.map(l => ({ item: l.description, qty: l.quantity, unit: l.unitSen === null ? '—' : formatMoney(l.unitSen), total: l.totalSen === null ? '—' : formatMoney(l.totalSen) })),
+    status: 'EXTRACTED', statusNote: 'Fields read from the document',
+  };
+}
 
 interface Flow { intent: Intent | null; stage: 'ask_purpose' | 'ask_file' | 'processing' | 'idle'; purpose?: string }
 export interface ChatSummary { id: string; title: string; at: string; count: number; current: boolean }
@@ -85,6 +112,64 @@ const m = (key: string, label: string, sen: number, confidence = 0.98): Field =>
 const li = (id: string, description: string, quantity: number, unitSen: number | null): LineItem => ({ id, description, quantity, unitSen, totalSen: lineTotal(quantity, unitSen) });
 
 /* ---------------- prepared sample extractions ---------------- */
+/** A document read from the file itself by the backend (/api/extract: PDF text layer, classified and parsed). */
+export interface ReadDocument { doc_type: DocType; fields: Field[]; lines: LineItem[]; warnings: string[]; source?: 'pdf_text' | 'ocr' }
+type ReadResult = { ok: true; doc: ReadDocument } | { ok: false; error: string };
+
+/** Send the file to the backend to be read: a PDF's text layer, or OCR (Tesseract) for a photo or scan. */
+export async function readDocument(file: File): Promise<ReadResult> {
+  if (!/\.(pdf|jpe?g|png|webp|gif|bmp|tiff?)$/i.test(file.name)) return { ok: false, error: 'only PDFs and images can be read' };
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    const response = await fetch('/api/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: file.name, content_base64: btoa(binary) }) });
+    const body = await response.json().catch(() => null);
+    if (!body) return { ok: false, error: 'the backend is not running' };
+    if (!response.ok) return { ok: false, error: body.error || `service error ${response.status}` };
+    return { ok: true, doc: body as ReadDocument };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+/** The claim council's answer (backend tutupbuku/council.py): 3 members, anonymous peer ranking, chairman. */
+export interface CouncilOpinion { member: string; name: string; recommendation: 'approve' | 'reject' | 'needs_info'; account_code: string | null; confidence: 'high' | 'medium' | 'low'; reasoning: string; concerns: string[] }
+export interface CouncilResult {
+  council_id: string; opinions: CouncilOpinion[]; agreement: 'unanimous' | 'majority' | 'split'; notes: string[]; calls: number; seconds: number;
+  reviews: { member: string; name: string; ranking: string[]; critique: string; ranked_own_first?: boolean }[];
+  ranking: { response: string; member: string; average_position: number | null; votes: number }[];
+  chair: { recommendation: CouncilOpinion['recommendation']; account_code: string | null; confidence: CouncilOpinion['confidence']; reasoning: string; standard_description: string; question_for_reviewer: string; source?: 'chair' | 'computed' };
+}
+
+/** Ask the claim council through the backend. It takes 7 gateway calls, so it can run for a minute or two. */
+async function runCouncil(employee: string, purpose: string, receipt: DocRecord): Promise<{ ok: true; result: CouncilResult } | { ok: false; error: string }> {
+  const money = (sen: number | null) => (sen === null ? '' : (sen / 100).toFixed(2));
+  const claim = { employee, purpose, receipt: { merchant: docParty(receipt), date: docDate(receipt), total_myr: money(docAmount(receipt)), tax_myr: money(field(receipt, 'tax')?.sen ?? null), reference: docNumber(receipt),
+    items: receipt.lines.map(l => ({ description: l.description, quantity: l.quantity, total_myr: money(l.totalSen) })) } };
+  try {
+    const response = await fetch('/api/claims/council', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ claim, accounts: CHART_OF_ACCOUNTS }) });
+    const body = await response.json().catch(() => null);
+    if (!body) return { ok: false, error: 'the backend is not running' };
+    if (!response.ok) return { ok: false, error: body.error || `service error ${response.status}` };
+    return { ok: true, result: body as CouncilResult };
+  } catch (e) { return { ok: false, error: (e as Error).message }; }
+}
+
+const CONFIDENCE_SCORE = { high: 0.9, medium: 0.7, low: 0.45 } as const;
+/** Turn the council's answer into the claim's suggestion; the deterministic date check is kept. */
+function fromCouncil(c: CouncilResult, rules: ClaimAnalysis): ClaimAnalysis {
+  const concerns = [...new Set(c.opinions.flatMap(o => o.concerns))];
+  const rec = c.chair.recommendation;
+  return {
+    plausibility: rec === 'approve' && c.agreement !== 'split' ? 'PLAUSIBLE' : 'NEEDS_REVIEW',
+    severity: rec === 'reject' ? 'HIGH' : rec === 'needs_info' || c.agreement === 'split' ? 'WARNING' : null,
+    findings: [...(c.chair.question_for_reviewer ? [c.chair.question_for_reviewer] : []), ...concerns, ...(rules.dateMismatch ? [rules.dateMismatch] : [])].slice(0, 6),
+    categoryCode: c.chair.account_code, confidence: CONFIDENCE_SCORE[c.chair.confidence], reasoning: c.chair.reasoning,
+    description: c.chair.standard_description || rules.description, dateMismatch: rules.dateMismatch,
+  };
+}
+
 interface Sample { fields: Field[]; lines: LineItem[]; poRef: string | null }
 function purchasingSample(type: DocType, intent: Intent | null): Sample {
   if (type === 'invoice') {
@@ -145,11 +230,27 @@ interface ClaimAnalysis { plausibility: 'PLAUSIBLE' | 'NEEDS_REVIEW'; findings: 
 function analyseClaim(purpose: string, receipt: DocRecord): ClaimAnalysis {
   const p = purpose.toLowerCase();
   const items = receipt.lines.map(l => l.description.toLowerCase()).join(' | ');
+  const seen = `${items} ${docParty(receipt).toLowerCase()}`;
   const alcohol = /beer|wine|whisky|liquor|tower|cocktail/.test(items);
-  const venue = /\broom\b|lounge|karaoke/.test(`${items} ${docParty(receipt).toLowerCase()}`);
-  const food = /set|lunch|dinner|meal|platter|drink|fish|rice|dessert/.test(items) && !alcohol;
-  const transport = /ride|taxi/.test(items); const supplies = /paper|toner|ink|cartridge/.test(items);
-  const wants: 'meal' | 'transport' | 'supplies' | null = /lunch|dinner|meal|treat|client|entertain/.test(p) ? 'meal' : /taxi|grab|ride|airport|travel/.test(p) ? 'transport' : /paper|toner|stationery|print|ink|office/.test(p) ? 'supplies' : null;
+  const venue = /\broom\b|lounge|karaoke/.test(seen);
+  const food = /set|lunch|dinner|meal|platter|drink|fish|rice|dessert|coffee|kopi|latte|espresso|americano|cappuccino|mocha|\btea\b|cake|croissant|sandwich|cafe|café|restaurant|kopitiam|bakery|zus|starbucks/.test(seen) && !alcohol;
+  const transport = /\bride|taxi|grab|\btrip|\bfare\b|toll|parking|fuel|petrol|diesel|flight/.test(seen); const supplies = /paper|toner|ink|cartridge/.test(items);
+  // Who benefited decides between entertainment and staff welfare; the receipt decides the kind of expense.
+  const attendees = /\bwith ((?:(?!\b(?:to|for|about|regarding|on|at)\b)[^,.;])+)/i.exec(purpose)?.[1]?.trim();
+  const STAFF = /\bstaff|\bteam\b|employee|colleague|department|\bmy (?:manager|boss|supervisor)|\bhr\b|birthday|farewell|appreciation|overtime/;
+  const staff = STAFF.test(p);
+  // Anyone named who is not stated as staff is treated as an outside guest.
+  const external = /client|customer|prospect|partner|supplier|vendor|investor|collaborat|\bdeal\b|pitch/.test(p) || /\bfrom [A-Z]/.test(purpose) || (!!attendees && !STAFF.test(attendees.toLowerCase()));
+  const meeting = /meeting|\bmeet\b|\bmet\b|discuss|catch ?up|consult|negotiat|presentation|briefing/.test(p);
+  // A telco merchant or bill decides the account on its own, whatever else the purpose says.
+  const TELCO = /\bmaxis\b|\bdigi\b|celcom|\bunifi\b|telekom|\btm ?net\b|u ?mobile|\byes ?[45]g\b|ytl comm|hotlink|tune ?talk|redone|\bxox\b|time ?dotcom|time (?:fibre|internet)|\btelco\b|telecom|phone bill|mobile bill|internet bill|wifi bill|postpaid|prepaid|\breload\b|broadband|\bfibre\b|data plan/;
+  const telco = TELCO.test(seen) || TELCO.test(p);
+  const wants: 'meal' | 'transport' | 'supplies' | 'telco' | null =
+    telco ? 'telco'
+    : /taxi|grab|\bride\b|airport|travel|site visit|\bsite\b|parking|toll|petrol|fuel|mileage|flight/.test(p) ? 'transport'
+    : /lunch|dinner|breakfast|brunch|meal|coffee|\btea\b|drinks|treat|entertain|makan/.test(p) ? 'meal'
+    : /paper|toner|stationery|print|ink|office suppl/.test(p) ? 'supplies'
+    : (external || staff || meeting) ? (transport ? 'transport' : supplies ? 'supplies' : 'meal') : null;
   const findings: string[] = []; let plausibility: 'PLAUSIBLE' | 'NEEDS_REVIEW' = 'PLAUSIBLE'; let severity: Severity | null = null;
   if (purpose.trim().length < 12) { plausibility = 'NEEDS_REVIEW'; severity = 'WARNING'; findings.push('The stated purpose is too short to check against the receipt.'); }
   else if (wants === 'meal') {
@@ -158,21 +259,23 @@ function analyseClaim(purpose: string, receipt: DocRecord): ClaimAnalysis {
     else { plausibility = 'NEEDS_REVIEW'; severity = 'WARNING'; findings.push('Receipt items do not clearly show a meal.'); }
   } else if (wants === 'transport') { if (transport) findings.push('Receipt is a ride, consistent with the stated travel.'); else { plausibility = 'NEEDS_REVIEW'; severity = 'WARNING'; findings.push('Receipt items do not show transport.'); } }
   else if (wants === 'supplies') { if (supplies) findings.push('Receipt items are office supplies, consistent with the stated purpose.'); else { plausibility = 'NEEDS_REVIEW'; severity = 'WARNING'; findings.push('Receipt items do not show office supplies.'); } }
+  else if (wants === 'telco') { if (TELCO.test(seen)) findings.push(`The receipt is from a telco or for a phone/internet service (${docParty(receipt)}).`); else { plausibility = 'NEEDS_REVIEW'; severity = 'WARNING'; findings.push('The purpose mentions a telco or phone/internet bill, but the receipt does not show one.'); } }
   else { plausibility = 'NEEDS_REVIEW'; severity = 'WARNING'; findings.push('The purpose does not say what kind of expense this is, so it cannot be tested against the receipt.'); }
-  const attendees = /\bwith ([A-Z][^,.;]*?)(?= to | for | about |[,.;]|$)/.exec(purpose)?.[1]?.trim();
   if (wants === 'meal') findings.push(attendees ? `Attendees stated by the employee: ${attendees}.` : 'No attendees were stated and none were assumed.');
   const dm = new RegExp(`(\\d{1,2})\\s+(${MONTHS.join('|')})`, 'i').exec(purpose);
   let dateMismatch: string | null = null;
   if (dm) { const [, day, month] = dm; const rd = docDate(receipt); if (Number(rd.slice(8)) !== Number(day) || MONTHS[Number(rd.slice(5, 7)) - 1] !== month.toLowerCase()) { dateMismatch = `Statement: ${day} ${month}; receipt: ${formatDate(rd)}.`; findings.push(`Receipt date differs from the date in the statement (${dateMismatch}).`); } }
   findings.push('A receipt cannot independently prove that a business purpose or meeting took place.');
-  let categoryCode: string | null = wants === 'meal' ? (attendees || /client/.test(p) ? '6020' : '6040') : wants === 'transport' ? '6030' : wants === 'supplies' ? '6010' : null;
-  let confidence = categoryCode === '6020' ? 0.78 : categoryCode === '6040' ? 0.55 : categoryCode === '6030' ? 0.88 : categoryCode === '6010' ? 0.93 : 0;
+  const categoryCode: string | null = wants === 'meal' ? (external ? '6020' : '6040') :wants === 'transport' ? '6030' : wants === 'supplies' ? '6010' : wants === 'telco' ? '6060' : null;
+  let confidence = categoryCode === '6060' ? 0.92 :categoryCode === '6020' ? (food ? 0.85 : 0.7) : categoryCode === '6040' ? (staff ? 0.8 : 0.5) : categoryCode === '6030' ? 0.88 : categoryCode === '6010' ? 0.93 : 0;
   if (plausibility === 'NEEDS_REVIEW' && categoryCode) confidence = Math.min(confidence, 0.41);
+  if (wants === 'meal' && !external && !staff && !attendees) findings.push('Nobody was named, so it is unclear whether this was a client meal or a staff meal.');
   const account = CHART_OF_ACCOUNTS.find(a => a.code === categoryCode);
-  const reasoning = account ? `Suggested from the stated purpose and receipt items${plausibility === 'NEEDS_REVIEW' ? '; low confidence because the receipt does not clearly support the purpose' : ''}. Subject to company policy.` : 'No account could be suggested from the information given.';
-  const kind = wants === 'meal' ? (/dinner/.test(p) ? 'Business dinner' : /lunch/.test(p) ? 'Business lunch' : 'Business meal') : wants === 'transport' ? 'Ride-hailing' : wants === 'supplies' ? 'Office supplies purchase' : 'Expense';
-  const clause = /\b(?:to|for)\s+(.+?)[.]?$/i.exec(purpose)?.[1];
-  const description = `${kind}${attendees ? ` with ${attendees}` : ''} on ${longDate(docDate(receipt))} at ${docParty(receipt)}${clause ? `, ${/^(to|for)\b/i.test(clause) ? '' : 'to '}${clause}` : ''}.`;
+  const why = categoryCode === '6020' ? (attendees && !/client|customer|prospect|partner|supplier|vendor|investor/.test(p) ? `a meeting with ${attendees}, who is not stated as staff` : 'a meal or drinks with someone outside the company') : categoryCode === '6040' ? (staff ? 'a meal for staff only' : 'a meal with no outside guest named') : categoryCode === '6030' ? 'transport, whatever the trip was for' : categoryCode === '6010' ? 'office consumables' : categoryCode === '6060' ? 'a phone, mobile or internet charge from a telco' : '';
+  const reasoning = account ? `Suggested because this looks like ${why}${plausibility === 'NEEDS_REVIEW' ? '; low confidence because the receipt does not clearly support the purpose' : ''}. Subject to company policy.` : 'No account could be suggested from the information given.';
+  const kind = wants === 'meal' ? (/dinner/.test(p) ? 'Business dinner' : /lunch/.test(p) ? 'Business lunch' : /coffee/.test(p) ? 'Coffee meeting' : meeting ? 'Business meeting' : categoryCode === '6040' ? 'Staff meal' : 'Business meal') : wants === 'transport' ? 'Ride-hailing' : wants === 'supplies' ? 'Office supplies purchase' : wants === 'telco' ? 'Telecommunications charge' : 'Expense';
+  const clause = /\b((?:to|for)\s+.+?)[.]?$/i.exec(purpose)?.[1];
+  const description = `${kind}${attendees ? ` with ${attendees}` : ''} on ${longDate(docDate(receipt))} at ${docParty(receipt)}${clause ? `, ${clause}` : ''}.`;
   return { plausibility, findings, severity, categoryCode, confidence, reasoning, description, dateMismatch };
 }
 
@@ -195,6 +298,9 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   const say = useCallback((text: string, extra: Partial<Extract<Msg, { kind: 'agent' }>> = {}) => add({ id: uid(), kind: 'agent', text, ...extra }), [add]);
   const setStage = (i: number, s: StageState) => setStages(cur => cur.map((x, k) => (k === i ? s : x)));
   const touch = () => setStamp(Date.now());
+  /** Move the document card's status along as the steps finish. */
+  const setCardStatus = (id: string | undefined, status: CardStatus, statusNote: string) => id && setMessages(items => items.map(x =>
+    (x.id === id && x.kind === 'card' && x.card.type === 'extract' ? { ...x, card: { ...x.card, status, statusNote } } : x)));
 
   useEffect(() => {
     try {
@@ -227,11 +333,13 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     const fresh = blank(); switchTo(fresh.id, [...rest, fresh]);
   };
 
-  const run = useCallback(async (file: File) => {
+  const run = useCallback(async (file: File, pre?: ReadResult) => {
     const intent = flow.current.intent; const purpose = flow.current.purpose ?? '';
     flow.current = { ...flow.current, stage: 'processing' }; setBusy(true); setStages(DEMO_STAGES.map(() => 'queued'));
+    // Duplicate checks compare against the saved records; say so when they could not be loaded instead of passing silently.
+    if (!data.storage.ok) say(`Warning: your saved records could not be loaded from Supabase${data.storage.message ? ` (${data.storage.message})` : ''}. I cannot check this file for duplicates, and nothing will be saved until the connection is back. Use Retry on the Documents page when you are online.`);
     const claims = intent === 'claim' || intent === 'dinner';
-    const labels = claims ? ['Receive the receipt', 'Read merchant, date and amount', 'Check purpose, suggest account', 'Verify and look for issues', 'Save the claim'] : ['Receive the document', 'Read the fields', 'Link to purchase order', 'Verify prices, quantities and duplicates', 'Save the record'];
+    const labels = claims ? ['Receive the receipt', 'Read merchant, date and amount', 'Claim council: 3 members, peer review, chairman', 'Verify and look for issues', 'Save the claim'] : ['Receive the document', 'Read the fields', 'Link to purchase order', 'Verify prices, quantities and duplicates', 'Save the record'];
     const stepsId = uid();
     const steps = (done: number) => ({ id: stepsId, kind: 'steps' as const, steps: labels.map((label, i) => ({ label, state: i < done ? 'done' as const : i === done ? 'running' as const : 'queued' as const })) });
     add(steps(0)); const update = (done: number) => setMessages(items => items.map(x => x.id === stepsId ? steps(done) : x));
@@ -239,13 +347,9 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     const STEP_MS = [0, 3600, 2800, 3200, 1800];
     const advance = async (i: number) => { setStage(i, 'completed'); if (i < 4) setStage(i + 1, 'running'); update(i + 1); await sleep(i < 4 ? Math.round(STEP_MS[i + 1] * (0.85 + Math.random() * 0.3)) : 700); };
     try {
+      // Saved records are never deleted by a new upload: uploading the same invoice again is flagged as a duplicate
+      // by the checks, and Fix now / Review later refuses to save an invoice number that is already on file.
       setStage(0, 'running'); touch();
-      if (!claims && DEMO_INVOICE_1019.fileMatch.test(file.name)) {
-        // Re-running the demo: drop the earlier copy and retire any Fix now / Review later buttons still waiting from the earlier run,
-        // so a stale button can never save a second copy or raise a second issue.
-        data.discardInvoice('BST-INV-26-1019');
-        setStore(st => ({ ...st, chats: st.chats.map(c => ({ ...c, messages: c.messages.map(x => (x.kind === 'quick' && x.ctx?.invoiceNo === 'BST-INV-26-1019' ? { ...x, used: true } : x)) })) }));
-      }
       await sleep(900);
       const hash = await sha256(file); await sleep(1400); await advance(0);
       const { docs, links, claims: allClaims, issues } = data.latest.current;
@@ -256,43 +360,65 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       const dupFile = docs.find(x => x.hash === hash && x.status !== 'REJECTED');
 
       if (claims) {
-        const kind = pickReceipt(intent, purpose, file.name);
-        const tpl = RECEIPTS[kind];
+        // Read the receipt itself (OCR for photos, text for PDFs); prepared sample values only when that is impossible.
+        const read = pre ?? await readDocument(file);
+        const real = read.ok && read.doc.doc_type === 'claim_receipt' ? read.doc : null;
+        const tpl = real ? { fields: real.fields, lines: real.lines } : RECEIPTS[pickReceipt(intent, purpose, file.name)];
+        if (!real && !pre) say(`I could not read the receipt itself (${read.ok ? 'it reads as a purchasing document' : read.error}), so I am using prepared sample values.`);
         const receipt: DocRecord = { id: newDocIds[0], docType: 'claim_receipt', flow: 'claims', status: 'EXTRACTED', fields: tpl.fields, lines: tpl.lines, ...base };
-        add({ id: uid(), kind: 'card', card: { type: 'extract', title: 'Read from the receipt', sample: true, fields: tpl.fields.map(f => ({ label: f.label, value: fieldDisplay(f), low: (f.confidence ?? 1) < 0.7 })), lines: tpl.lines.map(l => ({ item: l.description, qty: l.quantity, unit: l.unitSen === null ? '—' : formatMoney(l.unitSen), total: l.totalSen === null ? '—' : formatMoney(l.totalSen) })) } });
+        const cardId = uid();
+        add({ id: cardId, kind: 'card', card: docCard(receipt, 'Read from the receipt', !real, real?.warnings ?? [], real?.source) });
         await advance(1);
-        const a = analyseClaim(purpose, receipt);
-        add({ id: uid(), kind: 'card', card: { type: 'claim', purpose, plausibility: a.plausibility, findings: a.findings, category: CHART_OF_ACCOUNTS.find(x => x.code === a.categoryCode) ? `${a.categoryCode} · ${CHART_OF_ACCOUNTS.find(x => x.code === a.categoryCode)!.name}` : 'No suggestion', confidence: a.confidence, reasoning: a.reasoning, description: a.description } });
+        const rules = analyseClaim(purpose, receipt);   // deterministic: date mismatch, and the fallback when the council is unreachable
+        setCardStatus(cardId, 'EXTRACTED', 'Receipt read · the claim council is reviewing it');
+        const council = await runCouncil('Demo employee', purpose, receipt);
+        const a: ClaimAnalysis = council.ok ? fromCouncil(council.result, rules) : rules;
+        if (council.ok) add({ id: uid(), kind: 'card', card: { type: 'council', purpose, result: council.result } });
+        else {
+          say(`The claim council could not be reached (${council.error}), so I used the built-in rule check instead.`);
+          add({ id: uid(), kind: 'card', card: { type: 'claim', purpose, plausibility: a.plausibility, findings: a.findings, category: CHART_OF_ACCOUNTS.find(x => x.code === a.categoryCode) ? `${a.categoryCode} · ${CHART_OF_ACCOUNTS.find(x => x.code === a.categoryCode)!.name}` : 'No suggestion', confidence: a.confidence, reasoning: a.reasoning, description: a.description } });
+        }
+        setCardStatus(cardId, 'EXTRACTED', a.plausibility === 'PLAUSIBLE' ? 'Receipt supports the stated purpose' : 'Purpose needs a closer look');
         await advance(2);
         const claimId = allocIds('CLM', allClaims.map(x => x.id), 1)[0];
         const sum = tpl.lines.reduce((s, l) => s + (l.totalSen ?? 0), 0);
         if (Math.abs(sum - (docAmount(receipt) ?? 0)) > 1) draftIssues.push({ draft: { ruleCode: 'TOTAL_MISMATCH', typeLabel: 'Amount mismatch', severity: 'WARNING', docIds: [receipt.id], claimId, title: 'Receipt lines do not add up to the total', detected: 'Sum of line totals differs from the receipt total.', why: 'Totals must add up within rounding tolerance.', suggested: ['Compare with the receipt image.'], evidence: [{ label: 'Sum of lines', expected: formatMoney(sum), found: formatMoney(docAmount(receipt) ?? 0) }] } });
-        if (a.severity) draftIssues.push({ draft: { ruleCode: 'CLAIM_PURPOSE', typeLabel: 'Claim purpose concern', severity: a.severity, docIds: [receipt.id], claimId, title: a.severity === 'HIGH' ? 'Stated purpose is not supported by the receipt' : 'Stated purpose cannot be confirmed from the receipt', detected: a.findings[0], why: 'Receipt contents do not clearly support the stated business purpose. A receipt cannot prove a business meeting.', suggested: ['Ask the employee for attendees and the business reason.', 'Approve or reject in Review.'], evidence: [{ label: 'Stated purpose', found: purpose || '(none)' }, { label: 'Receipt items', found: tpl.lines.map(l => l.description).join(', ') }, { label: 'Amount', found: formatMoney(docAmount(receipt) ?? 0) }] } });
+        if (a.severity) draftIssues.push({ draft: { ruleCode: 'CLAIM_PURPOSE', typeLabel: 'Claim purpose concern', severity: a.severity, docIds: [receipt.id], claimId, title: a.severity === 'HIGH' ? 'Stated purpose is not supported by the receipt' : 'Stated purpose cannot be confirmed from the receipt', detected: a.findings[0] ?? a.reasoning, why: council.ok ? `Claim council (${council.result.agreement}): ${council.result.chair.reasoning}` : 'Receipt contents do not clearly support the stated business purpose. A receipt cannot prove a business meeting.', suggested: ['Ask the employee for attendees and the business reason.', 'Approve or reject in Review.'], evidence: [{ label: 'Stated purpose', found: purpose || '(none)' }, { label: 'Receipt items', found: tpl.lines.map(l => l.description).join(', ') }, { label: 'Amount', found: formatMoney(docAmount(receipt) ?? 0) }] } });
+        for (const f of receipt.fields.filter(x => (x.confidence ?? 1) < 0.7)) draftIssues.push({ draft: { ruleCode: 'EXTRACTION_UNCERTAIN', typeLabel: 'Extraction uncertainty', severity: 'INFO', docIds: [receipt.id], claimId, fieldKey: f.key, title: `${f.label} on the receipt was hard to read`, detected: `Read as ${fieldDisplay(f)} with ${Math.round((f.confidence ?? 0) * 100)}% confidence.`, why: 'A value OCR is unsure of is shown for confirmation rather than assumed correct.', suggested: ['Compare with the receipt and confirm or correct it.'], evidence: [{ label: f.label, found: fieldDisplay(f), note: `Confidence ${Math.round((f.confidence ?? 0) * 100)}%` }] } });
         if (a.dateMismatch) draftIssues.push({ draft: { ruleCode: 'CLAIM_DATE_MISMATCH', typeLabel: 'Claim date mismatch', severity: 'WARNING', docIds: [receipt.id], claimId, title: 'Receipt date differs from the date in the statement', detected: a.dateMismatch, why: 'The receipt date differs from the employee’s statement; it may be a typing error or a different trip.', suggested: ['Ask the employee which date is correct.'], evidence: [{ label: 'Date', found: a.dateMismatch }] } });
         const dup = docs.find(x => x.docType === 'claim_receipt' && x.status !== 'REJECTED' && (dupFile?.id === x.id || (docParty(x) === docParty(receipt) && docDate(x) === docDate(receipt) && docAmount(x) === docAmount(receipt))));
         if (dup) draftIssues.push({ draft: { ruleCode: 'DUPLICATE_FILE', typeLabel: 'Possible duplicate', severity: 'WARNING', docIds: [receipt.id, dup.id], claimId, title: `Receipt looks the same as ${docNumber(dup)}`, detected: 'Same merchant, date and amount (or the same file) already exists.', why: 'Duplicate receipts risk a double claim.', suggested: ['Keep one record and mark the other as the duplicate.'], evidence: [{ label: 'Merchant · date · amount', expected: `${docParty(dup)} · ${formatDate(docDate(dup))} · ${formatMoney(docAmount(dup) ?? 0)}`, found: `${docParty(receipt)} · ${formatDate(docDate(receipt))} · ${formatMoney(docAmount(receipt) ?? 0)}` }] } });
         const ids = issueIds(draftIssues.length);
         const created: Issue[] = draftIssues.map((x, n) => ({ ...x.draft, id: ids[n], status: 'OPEN', createdAt: new Date().toISOString() }));
-        const claim: Claim = { id: claimId, employee: 'Demo employee', receiptDocId: receipt.id, employeePurpose: purpose, categoryCode: a.categoryCode, categoryConfidence: a.confidence, alternativeCodes: [], categoryReasoning: a.reasoning, standardizedDescription: a.description, findings: a.findings, status: a.plausibility };
-        add({ id: uid(), kind: 'card', card: { type: 'findings', items: created.map(c => ({ severity: c.severity, title: c.title, typeLabel: c.typeLabel })), human: true } });
+        const claim: Claim = { id: claimId, employee: 'Demo employee', receiptDocId: receipt.id, employeePurpose: purpose, categoryCode: a.categoryCode, categoryConfidence: a.confidence,
+          alternativeCodes: council.ok ? [...new Set(council.result.opinions.map(o => o.account_code).filter((c): c is string => Boolean(c) && c !== a.categoryCode))] : [], categoryReasoning: a.reasoning, standardizedDescription: a.description, findings: a.findings, status: a.plausibility };
+        add({ id: uid(), kind: 'card', card: { type: 'findings', items: created.map(c => ({ id: c.id, severity: c.severity, title: c.title, typeLabel: c.typeLabel })), human: true } });
+        setCardStatus(cardId, 'EXTRACTED', created.length ? `${created.length} issue${created.length === 1 ? '' : 's'} found · saving` : 'No issues found · saving');
         await advance(3);
         data.commit({ docs: [receipt], links: [], claims: [claim], issues: created, note: `Claim ${claimId} created from chat`, entityId: claimId }, 'Claims Verification Agent');
-        add({ id: uid(), kind: 'card', card: { type: 'saved', lines: [`Claim ${claimId} saved as Pending. Receipt ${docNumber(receipt)} is in Documents.`, created.length ? `${created.length} issue${created.length === 1 ? '' : 's'} raised in Action Items → Issues.` : 'No issues were raised.', 'Human review is required: the claim is waiting in Action Items → Review for an approve or reject decision.'] } });
+        setCardStatus(cardId, 'PENDING', `Claim ${claimId} saved · waiting for approval`);
+        add({ id: uid(), kind: 'card', card: { type: 'saved', lines: [`Claim ${claimId} saved as Pending. Receipt ${docNumber(receipt)} is in Documents.`, created.length ? `${created.length} issue${created.length === 1 ? '' : 's'} raised for the reviewer.` : 'No issues were raised.', 'A reviewer, not the person who submitted it, approves or rejects this claim.'], hideActionItems: true } });
         await advance(4);
-        say('Done. I did not approve anything on your behalf.');
+        say('Done. This claim now waits for a reviewer to approve or reject it.');
       } else {
-        const type = docTypeFor(file.name);
+        // Read the file itself first (PDF text layer). Only when that is impossible fall back to a prepared sample.
+        const read = pre ?? await readDocument(file);
+        const real = read.ok ? read.doc : null;
+        const type = real?.doc_type ?? docTypeFor(file.name);
         const known = type === 'invoice' && DEMO_INVOICE_1019.fileMatch.test(file.name) ? DEMO_INVOICE_1019 : null;
-        const sample: Sample = known ?? purchasingSample(type, intent);
-        const doc: DocRecord = { id: newDocIds[0], docType: type, flow: 'purchasing', status: 'EXTRACTED', fields: sample.fields, lines: sample.lines, ...base, ...(known ? { sourceUrl: known.sourceUrl } : {}) };
-        add({ id: uid(), kind: 'card', card: { type: 'extract', title: `Read from the ${TYPE_CONFIG[type].label.toLowerCase()}`, sample: true, fields: sample.fields.map(f => ({ label: f.label, value: fieldDisplay(f), low: (f.confidence ?? 1) < 0.7 })), lines: sample.lines.map(l => ({ item: l.description, qty: l.quantity, unit: l.unitSen === null ? '—' : formatMoney(l.unitSen), total: l.totalSen === null ? '—' : formatMoney(l.totalSen) })) } });
+        const sample: Sample = real ? { fields: real.fields, lines: real.lines, poRef: real.fields.find(f => f.key === 'po_ref')?.value ?? null } : known ?? purchasingSample(type, intent);
+        const doc: DocRecord = { id: newDocIds[0], docType: type, flow: 'purchasing', status: 'EXTRACTED', fields: sample.fields, lines: sample.lines, ...base, ...(known && !real ? { sourceUrl: known.sourceUrl } : {}) };
+        if (!real && !pre) say(`I could not read the file itself (${read.ok ? '' : read.error}), so I am using prepared sample values for this ${TYPE_CONFIG[type].label.toLowerCase()}.`);
+        const cardId = uid();
+        add({ id: cardId, kind: 'card', card: { ...docCard(doc, `Read from the ${TYPE_CONFIG[type].label.toLowerCase()}`, !real, real?.warnings ?? [], real?.source), statusNote: type === 'purchase_order' ? 'Fields read · checking for duplicates' : 'Fields read · finding the purchase order' } });
         await advance(1);
         let po: DocRecord | null = null; let basis = ''; let confirmed = false; let confidence = 0; let comparison: Comparison[] = []; let checkIssues: IssueDraft[] = [];
         if (type === 'invoice') { const c = checkInvoice(doc, docs, links, sample.poRef); ({ po, basis, confirmed, confidence, comparison } = c); checkIssues = c.issues; }
+        // A quotation comes before its PO, so a quotation without one is normal, not a warning.
         else if (type !== 'purchase_order') {
           po = docs.find(x => x.docType === 'purchase_order' && sample.poRef && docNumber(x) === sample.poRef && x.status !== 'REJECTED') ?? null;
           if (po) { basis = `explicit PO reference ${sample.poRef}`; confirmed = true; confidence = 0.99; }
-          else checkIssues.push({ ruleCode: 'MISSING_PO', typeLabel: 'Missing purchase order', severity: 'WARNING', docIds: [doc.id], title: `${TYPE_CONFIG[type].label} ${docNumber(doc)} has no purchase order`, detected: 'The referenced PO has not been uploaded.', why: 'A missing document is not proof of an invalid purchase.', suggested: ['Link an existing PO or record an approved non-PO purchase.'], evidence: [{ label: 'PO reference', found: sample.poRef ?? 'None' }] });
+          else if (type !== 'quotation') checkIssues.push({ ruleCode: 'MISSING_PO', typeLabel: 'Missing purchase order', severity: 'WARNING', docIds: [doc.id], title: `${TYPE_CONFIG[type].label} ${docNumber(doc)} has no purchase order`, detected: 'The referenced PO has not been uploaded.', why: 'A missing document is not proof of an invalid purchase.', suggested: ['Link an existing PO or record an approved non-PO purchase.'], evidence: [{ label: 'PO reference', found: sample.poRef ?? 'None' }] });
         }
         const sameNo = type === 'purchase_order' ? docs.find(x => x.docType === 'purchase_order' && docNumber(x) === docNumber(doc)) : null;
         const dup = dupFile ?? sameNo;
@@ -301,11 +427,14 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         const poChain = po ? chainOf(po.id, docs, links) : [];
         add({ id: uid(), kind: 'card', card: { type: 'links', title: po ? `Linked to ${docNumber(po)}` : type === 'purchase_order' ? 'Purchase order — anchor of a new chain' : 'No purchase order found', basis: po ? `${Math.round(confidence * 100)}% · ${basis}${confirmed ? '' : ' · proposed, needs confirmation'}` : 'Kept as an unmatched record. It was not rejected.', confirmed,
           chain: [...poChain.map(x => ({ label: TYPE_CONFIG[x.docType].label, no: docNumber(x) })), ...(po && !poChain.some(x => x.id === po!.id) ? [] : []), { label: TYPE_CONFIG[type].label, no: docNumber(doc), here: true }] } });
+        if (po) setCardStatus(cardId, 'MATCHED', `Linked to ${docNumber(po)} · verifying`);
+        else setCardStatus(cardId, 'EXTRACTED', type === 'purchase_order' ? 'New purchase order · verifying' : 'No purchase order found · verifying');
         await advance(2);
         if (comparison.length && po) add({ id: uid(), kind: 'card', card: { type: 'compare', po: docNumber(po), rows: comparison } });
         const ids = issueIds(checkIssues.length);
         const created: Issue[] = checkIssues.map((x, n) => ({ ...x, id: ids[n], status: 'OPEN', createdAt: new Date().toISOString() }));
-        add({ id: uid(), kind: 'card', card: { type: 'findings', items: created.map(c => ({ severity: c.severity, title: c.title, typeLabel: c.typeLabel })), human: created.length > 0 } });
+        add({ id: uid(), kind: 'card', card: { type: 'findings', items: created.map(c => ({ id: c.id, severity: c.severity, title: c.title, typeLabel: c.typeLabel })), human: created.length > 0 } });
+        setCardStatus(cardId, created.length ? 'NEEDS_REVIEW' : po ? 'MATCHED' : 'EXTRACTED', created.length ? `${created.length} issue${created.length === 1 ? '' : 's'} found · saving` : 'All checks passed · saving');
         await advance(3);
         const link: DocLink[] = po && type !== 'purchase_order' && !created.some(c => c.ruleCode === 'AMBIGUOUS_PO_MATCH') ? [{ id: `LNK-${doc.id}-${po.id}`, sourceId: doc.id, targetId: po.id, relationship: 'for_po', confidence, confirmedBy: confirmed ? 'Explicit PO reference' : null }] : [];
         const variance = created.find(c => c.ruleCode === 'PRICE_VARIANCE');
@@ -320,11 +449,13 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
             ...(grand !== null && poTotal !== null && grand !== poTotal ? [`Invoice total ${formatMoney(grand)} against ${formatMoney(poTotal)} on the PO: ${formatMoney(Math.abs(grand - poTotal))} ${grand > poTotal ? 'more' : 'less'}, including sales tax.`] : []),
             'Nothing is saved yet. Fix it now to save a corrected record, or review it later to save it as needs review and add it to Action Items.'] } });
           add({ id: uid(), kind: 'quick', prompt: 'Do you want to fix this now, or review it later?', options: [{ id: 'fix_now', label: 'Fix now' }, { id: 'review_later', label: 'Review later' }],
-            ctx: { stepsId, invoiceNo: docNumber(doc), poNo: docNumber(po), varianceId: variance.id, prices, bundle: { doc: { ...doc, status: 'NEEDS_REVIEW' }, links: link, issues: created } } });
+            ctx: { stepsId, cardId, invoiceNo: docNumber(doc), poNo: docNumber(po), varianceId: variance.id, prices, bundle: { doc: { ...doc, status: 'NEEDS_REVIEW' }, links: link, issues: created } } });
           setStage(4, 'waiting');
+          setCardStatus(cardId, 'HELD', 'Price differs from the PO · not saved yet');
         } else {
           const status = type === 'invoice' ? (created.length ? 'NEEDS_REVIEW' : 'VERIFIED') : created.length ? 'NEEDS_REVIEW' : link.length ? 'MATCHED' : 'EXTRACTED';
           data.commit({ docs: [{ ...doc, status }], links: link, claims: [], issues: created, note: `${TYPE_CONFIG[type].label} ${docNumber(doc)} processed from chat`, entityId: doc.id }, 'Purchasing Agent');
+          setCardStatus(cardId, status, created.length ? `Saved · ${created.length} issue${created.length === 1 ? '' : 's'} in Action Items` : po ? `Saved under ${docNumber(po)}` : 'Saved');
           add({ id: uid(), kind: 'card', card: { type: 'saved', lines: [`${TYPE_CONFIG[type].label} ${docNumber(doc)} saved${po ? ` under ${docNumber(po)}` : type === 'purchase_order' ? '' : ' as an unmatched record'}.`, type === 'invoice' ? (created.length ? 'Status: needs review. It cannot be exported as a verified invoice until its issues are resolved.' : 'Status: verified — no open issues, so it is eligible for the verified-invoice export.') : `Status: ${status.toLowerCase().replace('_', ' ')}.`, created.length ? `${created.length} issue${created.length === 1 ? '' : 's'} raised in Action Items → Issues.` : 'No issues were raised.'] } });
           await advance(4);
           await advance(4);
@@ -365,23 +496,86 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       setStages(DEMO_STAGES.map((_, i) => (i === 0 ? 'waiting' : 'queued')));
       say('Thanks, I have noted that. Now attach the receipt (photo or PDF) with the paperclip.'); return;
     }
+    if (!files.length) {
+      // "Find SFSB-PO-2026-0104": any saved purchasing document number mentioned in the message is looked up and shown with its whole chain.
+      const lower = clean.toLowerCase();
+      const { docs, links, issues } = data.latest.current;
+      const hits = docs.filter(x => x.flow === 'purchasing' && x.status !== 'REJECTED' && docNumber(x) && lower.includes(docNumber(x).toLowerCase()));
+      const refLike = clean.match(/\b[A-Za-z]{2,5}[-/][A-Za-z0-9]{1,5}(?:[-/][A-Za-z0-9]{1,6}){1,3}\b/g)?.filter(r => /\d{3,}/.test(r)) ?? [];
+      if (hits.length || (refLike.length && /find|search|show|look|where|open|display|status|check|get/.test(lower))) {
+        flow.current = { intent: null, stage: 'idle' };
+        void (async () => {
+          setBusy(true); setStages(DEMO_STAGES.map((_, i) => (i === 0 ? 'running' : 'queued'))); touch();
+          try {
+            say(hits.length ? 'Looking that up in your saved records…' : 'Searching your saved records…');
+            await sleep(1600);
+            if (!hits.length) { say(`I could not find ${refLike.join(', ')} in your saved documents. Check the number, or upload the document and I will process it.`); return; }
+            const poIds = [...new Set(hits.map(h => poIdOf(h, links) ?? h.id))].slice(0, 3);
+            for (const poId of poIds) {
+              const po = docs.find(x => x.id === poId)!;
+              const chain = po.docType === 'purchase_order' ? chainOf(po.id, docs.filter(x => x.status !== 'REJECTED'), links) : [po];
+              const ids = new Set(chain.map(x => x.id));
+              add({ id: uid(), kind: 'card', card: { type: 'lookup', query: clean, poId: po.id, poNo: docNumber(po), supplier: docParty(po), date: docDate(po) ? formatDate(docDate(po)) : '—',
+                total: docAmount(po) !== null ? formatMoney(docAmount(po)!) : '—',
+                chain: chain.map(x => ({ id: x.id, label: TYPE_CONFIG[x.docType].label, no: docNumber(x), date: docDate(x) ? formatDate(docDate(x)) : '—', amount: docAmount(x) !== null ? formatMoney(docAmount(x)!) : '—', status: humanStatus(x.status), pdf: x.sourceUrl, hit: hits.some(h => h.id === x.id) })),
+                issues: issues.filter(i => (i.status === 'OPEN' || i.status === 'UNDER_REVIEW') && i.docIds.some(id => ids.has(id))).map(i => ({ severity: i.severity, title: i.title, status: i.status })) } });
+              await sleep(500);
+            }
+            say(poIds.length > 1 ? `Found ${poIds.length} matching purchase orders.` : 'That is everything on file for it. Ask me about another document number whenever you like.');
+          } finally { setStages(DEMO_STAGES.map(() => 'queued')); setBusy(false); touch(); }
+        })();
+        return;
+      }
+    }
     if (f.stage === 'ask_file') {
       if (files[0]) { void run(files[0]); return; }
       say('I still need the file. Use the paperclip to attach it, then send.'); return;
     }
     const t = clean.toLowerCase();
     const claimish = /claim|receipt|expense|reimburs/.test(t); const purchasish = /invoice|quotation|purchase order|\bpo\b|delivery order|payment|supplier/.test(t);
-    if (files.length && !claimish && !purchasish && looksPurchasing(files[0].name)) {
-      // The file name says it is a supplier document: no need to ask, just run the purchasing workflow.
-      const type = docTypeFor(files[0].name);
-      flow.current = { intent: 'process', stage: 'ask_file' };
-      say(`This looks like a supplier ${TYPE_CONFIG[type].label.toLowerCase()}, so I will treat it as a purchasing document and process it now.`);
-      void run(files[0]); return;
-    }
     if (files.length && !claimish && !purchasish) {
-      flow.current = { intent: null, stage: 'ask_file' };
-      add({ id: uid(), kind: 'quick', options: [{ id: 'claim', label: 'An expense claim receipt' }, { id: 'process', label: 'A purchasing document' }] });
-      pendingFile.current = files[0]; return;
+      // Read the file first and let its content decide what it is; ask only when it cannot be read.
+      const file = files[0];
+      void (async () => {
+        setBusy(true); touch();
+        const read = await readDocument(file);
+        setBusy(false);
+        if (read.ok && read.doc.doc_type === 'claim_receipt') {
+          // A receipt: the message sent with it is the employee's purpose; without one, ask for it.
+          const merchant = read.doc.fields.find(f => f.key === 'merchant')?.value;
+          const total = read.doc.fields.find(f => f.key === 'total');
+          const what = `a receipt${merchant ? ` from ${merchant}` : ''}${total?.sen != null ? ` for ${formatMoney(total.sen)}` : ''}`;
+          if (clean) {
+            flow.current = { intent: 'claim', stage: 'ask_file', purpose: clean };
+            say(`I read ${what}, so I am treating this as an expense claim with your message as the purpose.`);
+            void run(file, read); return;
+          }
+          flow.current = { intent: 'claim', stage: 'ask_purpose' };
+          pendingFile.current = file;
+          setStages(DEMO_STAGES.map((_, i) => (i === 0 ? 'waiting' : 'queued'))); touch();
+          say(`I read ${what}. What was the business purpose? Name any attendees or companies if relevant.`); return;
+        }
+        if (read.ok) {
+          const no = read.doc.fields.find(f => ['quotation_no', 'po_no', 'do_no', 'invoice_no', 'advice_no', 'receipt_no'].includes(f.key))?.value;
+          flow.current = { intent: 'process', stage: 'ask_file' };
+          say(`I read the file: it is a ${TYPE_CONFIG[read.doc.doc_type].label.toLowerCase()}${no ? ` (${no})` : ''}${read.doc.fields.find(f => f.key === 'supplier') ? ` from ${read.doc.fields.find(f => f.key === 'supplier')!.value}` : ''}. Processing it now.`);
+          void run(file, read); return;
+        }
+        if (looksPurchasing(file.name)) {
+          flow.current = { intent: 'process', stage: 'ask_file' };
+          say(`I could not read the file itself (${read.error}). The file name says it is a supplier ${TYPE_CONFIG[docTypeFor(file.name)].label.toLowerCase()}, so I will process it as one.`);
+          void run(file, read); return;
+        }
+        flow.current = { intent: null, stage: 'ask_file' };
+        add({ id: uid(), kind: 'quick', prompt: `I could not read this file automatically (${read.error}). What are you sending?`, options: [{ id: 'claim', label: 'An expense claim receipt' }, { id: 'process', label: 'A purchasing document' }] });
+        pendingFile.current = file;
+      })();
+      return;
+    }
+    if (claimish && !purchasish && files[0] && clean.split(/\s+/).length >= 4) {
+      // "Claim for coffee with Mr Lim…" plus the receipt: the message already states the purpose.
+      flow.current = { intent: 'claim', stage: 'ask_file', purpose: clean };
+      void run(files[0]); return;
     }
     if (claimish && !purchasish) { flow.current = { intent: 'claim', stage: 'ask_purpose' }; setStages(DEMO_STAGES.map((_, i) => (i === 0 ? 'waiting' : 'queued'))); touch();
       if (files[0]) pendingFile.current = files[0];
@@ -389,7 +583,21 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     if (purchasish) { flow.current = { intent: /match/.test(t) ? 'match' : /check|compare/.test(t) ? 'compare' : 'process', stage: 'ask_file' }; setStages(DEMO_STAGES.map((_, i) => (i === 0 ? 'waiting' : 'queued'))); touch();
       if (files[0]) { void run(files[0]); return; }
       say('Attach the document with the paperclip and I will process it.'); return; }
-    say('I can submit an expense claim or process a purchasing document. Pick one of the suggestions, or describe what you want to do. You can also ask me to prepare the month-end review pack.');
+    // Anything the sample flows do not handle goes to the real WorkBuddy main agent (backend -> ngrok gateway).
+    const history = messagesRef.current
+      .filter((m): m is Extract<Msg, { kind: 'user' | 'agent' }> => m.kind === 'user' || m.kind === 'agent')
+      .slice(-6).map(m => ({ role: m.kind, text: m.text }));
+    void (async () => {
+      setBusy(true); setStages(DEMO_STAGES.map((_, i) => (i === 0 ? 'running' : 'queued'))); touch();
+      try {
+        const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: clean, history }) });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) { say(`The WorkBuddy agent could not answer: ${body.error || `service error ${response.status}`}.`); return; }
+        say(body.reply);
+      } catch {
+        say('The review service is offline, so the WorkBuddy agent could not be reached. Start the Python service and try again.');
+      } finally { setStages(DEMO_STAGES.map(() => 'queued')); setBusy(false); touch(); }
+    })();
   }, [add, busy, run, say]);
 
   const choose = useCallback((msgId: string, optionId: string) => {
@@ -408,6 +616,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
           if (optionId === 'review_later') {
             data.commit({ docs: [doc], links, claims: [], issues, note: `Invoice ${ctx.invoiceNo} saved for later review from chat`, entityId: doc.id }, 'Purchasing Agent');
             finish();
+            setCardStatus(ctx.cardId, 'NEEDS_REVIEW', `Saved under ${ctx.poNo} · price issue in Action Items`);
             add({ id: uid(), kind: 'card', card: { type: 'saved', lines: [`Invoice ${ctx.invoiceNo} saved as needs review under ${ctx.poNo}.`, `${issues.length} issue${issues.length === 1 ? '' : 's'} added to Action Items → Issues.`, 'It cannot be exported as a verified invoice until the price mismatch is resolved.'] } });
             say('No problem. It is waiting in Action Items for you whenever you are ready.', { to: '/issues', action: 'Open Action Items' });
             return;
@@ -418,6 +627,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
           const fixedDoc: DocRecord = { ...doc, lines: fixed.lines, fields: fixed.fields, status: kept.length ? 'NEEDS_REVIEW' : 'EXTRACTED' };
           data.commit({ docs: [fixedDoc], links, claims: [], issues: kept, note: `Invoice ${ctx.invoiceNo} saved after correcting unit price(s) to the PO price (chat)`, entityId: doc.id }, 'Purchasing Agent');
           finish();
+          setCardStatus(ctx.cardId, kept.length ? 'NEEDS_REVIEW' : 'VERIFIED', kept.length ? `Price corrected · ${kept.length} other issue${kept.length === 1 ? '' : 's'} open` : `Price corrected · saved under ${ctx.poNo}`);
           const before = docAmount(doc); const after = docAmount(fixedDoc);
           add({ id: uid(), kind: 'card', card: { type: 'fix', title: 'Fixed: price now matches the purchase order',
             rows: doc.lines.filter(l => ctx.prices[l.id] !== undefined).map(l => ({ item: l.description, from: `${formatMoney(l.unitSen ?? 0)} each`, to: `${formatMoney(ctx.prices[l.id])} each` })),

@@ -32,6 +32,7 @@ STAGES = (
 )
 ACTIVE = {"running", "waiting_for_input"}
 MAX_AGENT_RUNS_PER_HOUR = int(os.environ.get("TUTUPBUKU_MAX_AGENT_RUNS_PER_HOUR", "10"))
+MAX_COUNCILS_PER_HOUR = int(os.environ.get("TUTUPBUKU_MAX_COUNCILS_PER_HOUR", "10"))  # each council is 7 gateway calls
 MAX_CHAT_MESSAGES_PER_HOUR = int(os.environ.get("TUTUPBUKU_MAX_CHAT_MESSAGES_PER_HOUR", "60"))
 MAX_EVENTS = 200
 # Hard caps on what the agent can put on screen, whatever it returns.
@@ -86,6 +87,7 @@ def clip_review(result: dict[str, Any]) -> dict[str, Any]:
         "run_id": result.get("run_id"),
         "decision": result.get("decision"),
         "agents": result.get("agents", []),
+        "follow_ups": result.get("follow_ups", []),
         "calls": result.get("calls"),
         "audit": result.get("audit"),
     }
@@ -311,6 +313,47 @@ class ExecutionManager:
             return reviewer.chat(message.strip(), safe_history, {"case": case_summary, "latest_run": run_summary})
         except WorkBuddyError as exc:
             raise ExecutionError(f"The WorkBuddy agent could not answer ({exc.code}): {str(exc).rstrip('.')}.", 502) from exc
+
+    def council(self, claim: Any, accounts: Any) -> dict[str, Any]:
+        """Ask the claim council (three members, peer review, chairman) for a recommendation on one expense claim."""
+        from .council import ClaimCouncil
+
+        if not isinstance(claim, dict) or not isinstance(accounts, list) or not 1 <= len(accounts) <= 50:
+            raise ExecutionError("Send the claim and 1 to 50 chart-of-account entries.")
+        chart = []
+        for item in accounts:
+            if not isinstance(item, dict) or not isinstance(item.get("code"), str) or not isinstance(item.get("name"), str) or not 0 < len(item["code"]) <= 20:
+                raise ExecutionError("Each account needs a code and a name.")
+            entry = {"code": item["code"], "name": item["name"][:80]}
+            if isinstance(item.get("useWhen"), str) and item["useWhen"].strip():
+                entry["use_when"] = item["useWhen"][:300]
+            chart.append(entry)
+        receipt = claim.get("receipt") if isinstance(claim.get("receipt"), dict) else {}
+        items = receipt.get("items") if isinstance(receipt.get("items"), list) else []
+        safe = {
+            "employee": str(claim.get("employee") or "")[:120],
+            "stated_purpose": str(claim.get("purpose") or "")[:1000],
+            "receipt": {
+                "merchant": str(receipt.get("merchant") or "")[:120], "date": str(receipt.get("date") or "")[:20],
+                "total_myr": str(receipt.get("total_myr") or "")[:20], "tax_myr": str(receipt.get("tax_myr") or "")[:20],
+                "reference": str(receipt.get("reference") or "")[:60],
+                "items": [{"description": str(i.get("description") or "")[:160], "quantity": i.get("quantity"), "total_myr": str(i.get("total_myr") or "")[:20]}
+                          for i in items[:30] if isinstance(i, dict)],
+            },
+        }
+        reviewer = self.reviewer
+        if reviewer is None or not getattr(reviewer, "configured", False) or not hasattr(reviewer, "_call"):
+            raise ExecutionError("The WorkBuddy agent is not configured on this server (set CODEBUDDY_GATEWAY_URL and CODEBUDDY_GATEWAY_PASSWORD in .env).", 503)
+        now = time.monotonic()
+        with self._lock:
+            self._council_times = [t for t in getattr(self, "_council_times", []) if now - t < 3600]
+            if len(self._council_times) >= MAX_COUNCILS_PER_HOUR:
+                raise ExecutionError(f"The claim council limit of {MAX_COUNCILS_PER_HOUR} claims per hour is reached. Try again later.", 429)
+            self._council_times.append(now)
+        try:
+            return ClaimCouncil(reviewer).run(safe, chart)
+        except WorkBuddyError as exc:
+            raise ExecutionError(f"The claim council could not finish ({exc.code}): {str(exc).rstrip('.')}.", 502) from exc
 
     def audit(self, run_id: str) -> dict[str, Any] | None:
         """The per-call agent audit (prompt hash, raw reply, timing, tool use) for one run."""

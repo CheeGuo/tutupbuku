@@ -115,9 +115,11 @@ function IssueDetail({ issue }: { issue: Item }) {
   </article>;
 }
 
-/** Decisions depend on the type of issue; every one writes through the shared store and is audited. */
-function Resolution({ issue, records, claim }: { issue: Issue; records: DocRecord[]; claim?: Claim }) {
+/** Decisions depend on the type of issue; every one writes through the shared store and is audited.
+    Also shown in the Live Execution chat, under the finding that raised the issue. */
+export function Resolution({ issue, records, claim }: { issue: Issue; records: DocRecord[]; claim?: Claim }) {
   const { docs, links, setIssueStatus, confirmField, correctPrice, linkToPo, resolveDuplicate, replaceInvoice } = useData();
+  const noteId = React.useId();
   const [reading, setReading] = useState<'idle' | 'reading' | 'checking'>('idle');
   const [note, setNote] = useState('');
   const [mode, setMode] = useState<'resolve' | 'dismiss' | null>(null);
@@ -131,8 +133,8 @@ function Resolution({ issue, records, claim }: { issue: Issue; records: DocRecor
   useEffect(() => { const f = doc && issue.fieldKey ? field(doc, issue.fieldKey) : undefined; if (f) setValue(fieldInputValue(f)); }, [doc?.id, issue.fieldKey]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const noteForm = (verb: 'resolve' | 'dismiss', label: string, placeholder: string) => <div className="close-form">
-    <label htmlFor="close-note">{label}</label>
-    <textarea id="close-note" className="textarea" rows={3} value={note} onChange={e => setNote(e.target.value)} placeholder={placeholder} autoFocus />
+    <label htmlFor={noteId}>{label}</label>
+    <textarea id={noteId} className="textarea" rows={3} value={note} onChange={e => setNote(e.target.value)} placeholder={placeholder} autoFocus />
     <div className="actions"><button type="button" className="btn btn-primary" disabled={!note.trim()} onClick={() => setIssueStatus(issue.id, verb === 'resolve' ? 'RESOLVED' : 'DISMISSED', note)}>{verb === 'resolve' ? 'Mark resolved' : 'Dismiss issue'}</button>
       <button type="button" className="btn" onClick={() => { setMode(null); setNote(''); }}>Cancel</button></div></div>;
   const dismissRow = (label = 'Dismiss…') => <button type="button" className="btn btn-ghost" onClick={() => { setMode('dismiss'); setNote(''); }}>{label}</button>;
@@ -244,18 +246,31 @@ function ReviewView({ params, set }: { params: URLSearchParams; set: (p: Record<
   </div>;
 }
 
+/** Approve or reject a pending claim; approval is blocked while its issues are open or no account is chosen.
+    Also shown in the Live Execution chat after a claim is submitted. */
+export function ClaimDecision({ claim }: { claim: Claim }) {
+  const { issues, decideClaim } = useData();
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState('');
+  const reasonId = React.useId();
+  const open = issues.filter(i => i.claimId === claim.id && isActive(i));
+  const approveBlock = open.length > 0 ? `Approval is blocked while ${open.length === 1 ? 'an issue on this claim is' : `${open.length} issues on this claim are`} open. Acknowledge or resolve ${open.length === 1 ? 'it' : 'them'} first.` : !claim.categoryCode ? 'Choose an account before approving.' : '';
+  if (!isPending(claim)) return claim.decision ? <p className={claim.status === 'APPROVED' ? 'note-ok' : 'note-warn'}><strong>{claimLabel(claim)}</strong> {formatTimestamp(claim.decision.at)} by {claim.decision.by}{claim.decision.reason ? ` — ${claim.decision.reason}` : ''}</p> : null;
+  return rejecting ? <div className="close-form"><label htmlFor={reasonId}>Reason for rejecting</label>
+    <textarea id={reasonId} className="textarea" rows={3} value={reason} onChange={e => setReason(e.target.value)} placeholder="Recorded with your decision. The claim will not be exported." autoFocus />
+    <div className="actions"><button type="button" className="btn btn-danger" disabled={!reason.trim()} onClick={() => decideClaim(claim.id, 'REJECTED', reason)}>Reject claim</button><button type="button" className="btn" onClick={() => setRejecting(false)}>Cancel</button></div></div>
+    : <><div className="actions"><button type="button" className="btn btn-primary" disabled={Boolean(approveBlock)} onClick={() => decideClaim(claim.id, 'APPROVED')}>Approve</button><button type="button" className="btn btn-danger" onClick={() => setRejecting(true)}>Reject…</button></div>{approveBlock && <p className="hint">{approveBlock}</p>}</>;
+}
+
 function ClaimReview({ claim }: { claim: Claim }) {
-  const { docs, issues, audit, updateClaim, decideClaim } = useData();
+  const { docs, issues, audit, updateClaim } = useData();
   const receipt = claimDoc(claim, docs);
   const [description, setDescription] = useState(claim.standardizedDescription);
-  const [rejecting, setRejecting] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
-  const [reason, setReason] = useState('');
   const pending = isPending(claim);
   const related = issues.filter(i => i.claimId === claim.id);
   const open = related.filter(isActive);
   const history = audit.filter(a => a.entityId === claim.id);
-  const approveBlock = open.length > 0 ? 'Approval is blocked while issues on this claim are open. Acknowledge or resolve them in Issues.' : !claim.categoryCode ? 'Choose an account before approving.' : '';
   return <article className="detail" aria-label={`Claim ${claim.id}`}>
     <header className="detail-head"><div><span className="eyebrow">Claim · {claim.employee} · {claim.id}</span><h2>{receipt && docParty(receipt) ? docParty(receipt) : claim.id}</h2></div><Pill status={claim.status === 'APPROVED' ? 'APPROVED' : claim.status === 'REJECTED' ? 'REJECTED' : 'OPEN'} label={claimLabel(claim)} /></header>
     {receipt && <dl className="facts">{[['Expense date', formatDate(docDate(receipt))], ['Amount', formatMoney(docAmount(receipt) ?? 0)], ['Receipt reference', docNumber(receipt)], ['Claimant', claim.employee]].map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>}
@@ -277,11 +292,7 @@ function ClaimReview({ claim }: { claim: Claim }) {
       <dl className="kv">{receipt.fields.map(f => <div key={f.key}><dt>{f.label}</dt><dd>{fieldDisplay2(f)}</dd></div>)}</dl>
       <div className="table-wrap"><table className="table"><thead><tr><th>Item</th><th className="num">Qty</th><th className="num">Unit</th><th className="num">Total</th></tr></thead><tbody>{receipt.lines.map(l => <tr key={l.id}><td>{l.description}</td><td className="num">{l.quantity}</td><td className="num">{l.unitSen === null ? '—' : formatMoney(l.unitSen)}</td><td className="num">{l.totalSen === null ? '—' : formatMoney(l.totalSen)}</td></tr>)}</tbody></table></div></Disclosure>}
 
-    {pending ? (rejecting ? <div className="close-form"><label htmlFor="reject-reason">Reason for rejecting</label>
-      <textarea id="reject-reason" className="textarea" rows={3} value={reason} onChange={e => setReason(e.target.value)} placeholder="Recorded with your decision. The claim will not be exported." autoFocus />
-      <div className="actions"><button type="button" className="btn btn-danger" disabled={!reason.trim()} onClick={() => decideClaim(claim.id, 'REJECTED', reason)}>Reject claim</button><button type="button" className="btn" onClick={() => setRejecting(false)}>Cancel</button></div></div>
-      : <><div className="actions"><button type="button" className="btn btn-primary" disabled={Boolean(approveBlock)} onClick={() => decideClaim(claim.id, 'APPROVED')}>Approve</button><button type="button" className="btn btn-danger" onClick={() => setRejecting(true)}>Reject…</button></div>{approveBlock && <p className="hint">{approveBlock}</p>}</>)
-      : claim.decision && <p className={claim.status === 'APPROVED' ? 'note-ok' : 'note-warn'}><strong>{claimLabel(claim)}</strong> {formatTimestamp(claim.decision.at)} by {claim.decision.by}{claim.decision.reason ? ` — ${claim.decision.reason}` : ''}</p>}
+    <ClaimDecision claim={claim} />
     {history.length > 0 && <Disclosure title="Audit history" meta={history.length}><ul className="history">{history.map(h => <li key={h.id}><span className={`who who-${h.actorKind}`}>{h.actorKind === 'agent' ? 'AGENT' : 'HUMAN'}</span><span>{h.action}{h.previous && h.next ? ` (${h.previous} → ${h.next})` : ''}<small>{h.actor} · {formatTimestamp(h.timestamp)}</small></span></li>)}</ul></Disclosure>}
   </article>;
 }

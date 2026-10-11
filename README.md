@@ -17,9 +17,11 @@ five source-linked files. It prepares a review pack, not a completed accounting 
      needs and returns the shared-contract JSON. They run one after another by default, because the
      CodeBuddy gateway in use puts every call in the same session (parallel calls mixed replies in a
      real run). Set `TUTUPBUKU_PARALLEL_SUB_AGENTS=1` only for a gateway that isolates sessions.
-  3. **Main agent (join)**: reads the validated results and decides `ask_human` or `export`.
+  3. **Main agent (review)**: reads the validated results and decides `follow_up`, `ask_human` or
+     `export`. A follow-up gives one sub-agent a new task, optionally with other agents' results, and
+     the main agent then reviews again (at most 2 follow-ups per run).
 
-  The backend controls the flow: allow-listed sub-agents only, at most 5 calls per run, every reply
+  The main agent directs the flow and the backend enforces it: allow-listed sub-agents only, at most 9 calls per run, every reply
   schema-checked and size-capped, failed sub-agents reported as "not performed", and the human gate
   enforced by code even if the main agent says export. Agents never change an engine number or match.
   If the gateway is not configured or unreachable the run says so and continues with the engine only.
@@ -58,7 +60,8 @@ are defined in `prisma/schema.prisma` and live in their own Postgres schema, `tu
 
 ```powershell
 npm install                            # installs Prisma 6.19.3 (repository root)
-py -3.13 -m pip install "psycopg[binary]"
+py -3.13 -m pip install "psycopg[binary]" "pypdf==5.4.0" "Pillow==11.1.0"
+winget install --id UB-Mannheim.TesseractOCR -e   # OCR for receipt photos; or set TESSERACT_CMD to tesseract.exe
 npm run db:push                        # creates/updates the tables from prisma/schema.prisma
 py -3.13 -m unittest tests.test_records    # includes a real round trip when the database is reachable
 ```

@@ -109,8 +109,12 @@ def main() -> None:
         print("Warning: frontend/dist/index.html not found. Run `npm run build` in the frontend folder.", file=sys.stderr, flush=True)
 
     records = build_record_store(dict(os.environ), project_root)
-    storage = records.status()
-    print(f"Records: {records.mode} - {'OK' if storage['ok'] else 'NOT AVAILABLE'}: {storage['message']}", file=sys.stderr, flush=True)
+
+    def report_storage() -> None:
+        storage = records.status()
+        print(f"Records: {records.mode} - {'OK' if storage['ok'] else 'NOT AVAILABLE'}: {storage['message']}", file=sys.stderr, flush=True)
+
+    Thread(target=report_storage, name="tutupbuku-storage-check", daemon=True).start()
     browser = create_server(service, "127.0.0.1", args.port, api_token=api_token, agent_jobs=jobs, executions=executions, frontend_dist=frontend_dist, records=records)
     print(f"TutupBuku browser API: http://127.0.0.1:{browser.server_port}/", file=sys.stderr, flush=True)
     print("WorkBuddy agent: " + ("configured (main agent + sub-agents, each a separate gateway call)" if reviewer else "not configured (runs use the deterministic engine only)"), file=sys.stderr, flush=True)

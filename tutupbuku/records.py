@@ -12,6 +12,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -19,6 +20,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 KINDS = ("docs", "links", "claims", "issues", "audit")
 MAX_RECORDS = 5000
 ID_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,128}$")
+RETRY_AFTER_SECONDS = 60  # after a failed connection, answer "unreachable" at once for this long
 SETUP_HINT = "Create the tables with `npm run db:push`, or paste prisma/init.sql into the Supabase SQL editor."
 
 
@@ -171,8 +173,13 @@ class PostgresRecords:
         self.url, self.schema = connection_settings(database_url)
         self._connect = connect
         self._lock = threading.Lock()
+        self._down_until = 0.0
+        self._down_reason = ""
 
     def _connection(self):
+        remaining = self._down_until - time.monotonic()
+        if remaining > 0:
+            raise RecordStoreError(f"{self._down_reason} Retrying in {int(remaining) + 1} s.")
         if self._connect is not None:
             return self._connect()
         try:
@@ -180,14 +187,18 @@ class PostgresRecords:
         except ImportError as exc:
             raise RecordStoreError('The Postgres driver is not installed. Run: py -3.13 -m pip install "psycopg[binary]"') from exc
         try:
-            return psycopg.connect(self.url, connect_timeout=10, prepare_threshold=None, autocommit=False)
+            connection = psycopg.connect(self.url, connect_timeout=5, prepare_threshold=None, autocommit=False)
+            self._down_until = 0.0
+            return connection
         except psycopg.OperationalError as exc:
             first = (str(exc).splitlines() or ["connection failed"])[0]
             if "timeout" in first.casefold():
                 first = "connection timed out (this network may block Postgres ports 5432/6543; a phone hotspot works)"
             elif "password authentication failed" in first.casefold():
                 first = "password authentication failed (check the password in DATABASE_URL)"
-            raise RecordStoreError(f"The Supabase database could not be reached: {first}") from exc
+            self._down_reason = f"The Supabase database could not be reached: {first}."
+            self._down_until = time.monotonic() + RETRY_AFTER_SECONDS
+            raise RecordStoreError(self._down_reason) from exc
 
     def _table(self, name: str) -> str:
         return f'"{self.schema}"."{name}"'

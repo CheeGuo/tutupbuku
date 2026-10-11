@@ -63,11 +63,12 @@ export function Documents() {
       <div><h1>Documents</h1><p>Saved records and how they connect. To change a record, use Action Items.</p>
         <p className="storage-note" role="status" title={data.storage.message || ''}>
           <span className={`pill ${data.storage.ok ? (data.storage.mode === 'supabase' ? 'pill-mint' : 'pill-blue') : 'pill-red'}`}>
-            {data.storage.mode === 'loading' ? 'Loading records…'
-              : !data.storage.ok ? (data.storage.mode === 'offline' ? 'Not connected: changes stay in this browser' : 'Not saved')
-              : data.storage.mode === 'supabase' ? 'Saved in Supabase' : 'Saved on the server (no database configured)'}
+            {data.storage.mode === 'loading' ? 'Loading records from Supabase…'
+              : !data.storage.ok ? (data.storage.mode === 'offline' ? 'Could not load records' : 'Not saved')
+              : data.storage.mode === 'supabase' ? 'Loaded from Supabase' : 'Loaded from the server (no database configured)'}
           </span>
           {!data.storage.ok && data.storage.message && <span className="muted"> {data.storage.message}</span>}
+          {data.storage.mode !== 'loading' && <button type="button" className="btn btn-ghost btn-sm" onClick={() => void data.reload()}>{data.storage.ok ? 'Refresh' : 'Retry'}</button>}
         </p></div>
       <div className="export-bar" role="group" aria-label="Download CSV">
         <button type="button" className="btn btn-primary" onClick={() => data.exportCsv('purchasing', range)} title="Verified invoices only, within the dates chosen below"><DownloadIcon />Verified invoices CSV<span className="btn-count">{invoicesReady}</span></button>
@@ -107,7 +108,9 @@ export function Documents() {
             <ul className="po-children flat">{loose.map(d => <li key={d.id}><button type="button" className={`row child-row ${rowOn(d.id) ? 'on' : ''}`} onClick={() => set({ doc: d.id })} aria-pressed={rowOn(d.id)}>
               <span className="row-main"><strong>{docNumber(d)}</strong><span className="row-type">{TYPE_CONFIG[d.docType].label}</span></span>
               <span className="row-sub">{docParty(d)}<span className="dotsep" aria-hidden="true">·</span>{docDate(d) ? formatDate(docDate(d)) : '—'}</span></button></li>)}</ul></section>}
-          {!shownGroups.length && !loose.length && <Empty title={groups.length ? 'No records match' : 'No purchase orders yet'}>{groups.length ? 'Adjust the dates or category.' : 'Process a purchase order in Live Execution and it will appear here.'}</Empty>}
+          {!shownGroups.length && !loose.length && (data.storage.mode === 'loading'
+            ? <Empty title="Loading records">Retrieving the saved documents from Supabase.</Empty>
+            : <Empty title={groups.length ? 'No records match' : 'No purchase orders yet'}>{groups.length ? 'Adjust the dates or category.' : !data.storage.ok ? 'The records could not be retrieved. Check that the backend is running, then retry.' : 'Process a purchase order in Live Execution and it will appear here.'}</Empty>)}
         </> : <>
           {claimGroups.map(g => <section key={g.key} className="group" aria-label={`${humanStatus(g.key)} claims`}>
             <h3><span>{g.key === 'APPROVED' ? 'Approved' : g.key === 'PENDING' ? 'Pending' : 'Rejected'}</span><small>{g.items.length}</small></h3>

@@ -84,7 +84,11 @@ sequenceDiagram
     OR->>GW: sub-agent · docs-agent
     OR->>GW: sub-agent · verify-audit-agent
     OR->>GW: sub-agent · (third, if chosen)
-    OR->>GW: main agent · join → ask_human | export
+    loop at most 2 follow-ups
+        OR->>GW: main agent · review → follow_up | ask_human | export
+        OR->>GW: sub-agent · new task from the main agent (+ shared results)
+    end
+    OR->>GW: main agent · review → ask_human | export
     OR-->>EX: clipped result + audit file
     EX-->>UI: status waiting_for_input, question = row 41
     Op->>UI: picks INV-0912 / INV-0915 / neither + evidence
@@ -106,7 +110,8 @@ flowchart TD
         S1["Sub-agent · docs-agent<br/>receipt fields + manifest only"]
         S2["Sub-agent · verify-audit-agent<br/>bank rows + exceptions"]
         S3["Sub-agent · optional third"]
-        J["Main agent · JOIN<br/>decision: ask_human | export"]
+        J["Main agent · REVIEW<br/>decision: follow_up | ask_human | export"]
+        F["Sub-agent · follow-up<br/>new task + shared results"]
     end
 
     P -->|"plan JSON"| C1{"Backend checks<br/>allow-list · no duplicates · ≤ 3"}
@@ -115,8 +120,10 @@ flowchart TD
     S1 & S2 & S3 -->|"contract JSON"| C2{"Backend checks<br/>schema · right role · no tool use · caps"}
     C2 -.->|invalid / used tools| X2["sub-agent marked failed<br/>'checks not performed'"]
     C2 --> J
-    J --> C3{"Backend checks<br/>decision ∈ {ask_human, export}"}
-    C3 --> G{"Engine says a row<br/>is ambiguous?"}
+    J --> C3{"Backend checks<br/>decision · allow-listed agent<br/>≤ 2 follow-ups · time left"}
+    C3 -->|follow_up| F
+    F -->|"contract JSON"| C2
+    C3 -->|ask_human / export| G{"Engine says a row<br/>is ambiguous?"}
     G -->|yes| H["Pause: human gate<br/>(even if main agent said export)"]
     G -->|no| X["Export"]
     H -->|operator answer| X
@@ -137,7 +144,8 @@ starts a new session per conversation; that is a VM-side setting to check.
 | --- | --- | --- |
 | Engine owns arithmetic, matches, exports | `engine.py` | Agents only read results; nothing they say changes a match |
 | Sub-agent allow-list, no duplicates, at most 3 | `agents.py · parse_plan` | Refused and shown as an event |
-| At most 5 gateway calls per run | `agents.py · MAX_CALLS` | Extra steps never sent |
+| At most 9 gateway calls per run (plan, 3 subs, review, 2 × follow-up + review) | `agents.py · MAX_CALLS` | Extra steps never sent |
+| At most 2 follow-ups, only while 120 s of the deadline remain | `agents.py · _review / parse_join` | Main agent told to decide; another `follow_up` fails the step, disclosed |
 | Run deadline (600 s default) | `agents.py · _call` | Later calls not made; `RUN_DEADLINE` disclosed |
 | No tool use in this mode | `agents.py · _call` (gateway `toolCalls`) | Reply discarded; `AGENT_USED_TOOLS` |
 | JSON schema on every reply | `parse_plan / parse_sub / parse_join` | Step failed and disclosed, never guessed |

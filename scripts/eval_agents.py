@@ -60,6 +60,7 @@ def one_run(index: int, audit_root: Path) -> dict:
             "tool_use_reported": all(c.get("tool_calls") is not None for c in audit["calls"]) if audit["calls"] else False,
             "sub_agents": sub_agents,
             "failed_sub_agents": [a["agent"] for a in result.get("agents", []) if a.get("status") == "failed"],
+            "follow_ups": [f"{f['agent']}: {f['task']}" for f in result.get("follow_ups", [])],
             "chose_verify_audit": "verify-audit-agent" in sub_agents,
             "chose_purchasing_without_pos": "purchasing-agent" in sub_agents,
             "join_decision": (result.get("decision") or {}).get("decision"),

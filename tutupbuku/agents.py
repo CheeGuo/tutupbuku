@@ -3,12 +3,15 @@
 Every agent is its own CodeBuddy call through the gateway (loopback or ngrok), with its own
 conversation and only its own skill:
 
-    1. main agent  (plan)  -> which sub-agents to run, each with a task
-    2. sub-agents          -> run in parallel, each returns the shared-contract JSON
-    3. main agent  (join)  -> reads the validated sub-agent results, decides: ask_human | export
+    1. main agent  (plan)    -> which sub-agents to run, each with a task
+    2. sub-agents            -> run one after another (or in parallel when enabled), each returns the shared-contract JSON
+    3. main agent  (review)  -> reads the validated results, decides: follow_up | ask_human | export
+       follow_up             -> gives one sub-agent a new task (optionally with other agents' results),
+                                then the main agent reviews again; at most MAX_FOLLOW_UPS times
 
-The backend enforces the flow: only allow-listed sub-agents, a fixed call budget, schema checks
-on every reply, output caps, and the human gate. Agents never change an engine number or match.
+The main agent directs every step; the backend executes it and enforces the rules: only allow-listed
+sub-agents, a fixed call budget and deadline, schema checks on every reply, output caps, and the human
+gate. Agents never change an engine number or match.
 """
 
 from __future__ import annotations
@@ -28,11 +31,13 @@ from .workbuddy import SKILL_NAMES, WorkBuddyClient, WorkBuddyError
 
 MAIN_AGENT = "master-agent"
 SUB_AGENTS = tuple(name for name in SKILL_NAMES if name != MAIN_AGENT)
-MAX_SUB_AGENTS = 3          # per run, run in parallel
-MAX_CALLS = 2 + MAX_SUB_AGENTS
+MAX_SUB_AGENTS = 3          # chosen in the main agent's plan
+MAX_FOLLOW_UPS = 2          # extra sub-agent tasks the main agent may order after reviewing results
+MAX_CALLS = 2 + MAX_SUB_AGENTS + 2 * MAX_FOLLOW_UPS  # plan + subs + review, and a sub + review per follow-up
 RUN_DEADLINE_SECONDS = 600  # the whole agent phase of one run
+FOLLOW_UP_MIN_SECONDS = 120  # a follow-up is offered only while this much of the deadline is left
 AUDIT_REPLY_CHARS = 20_000
-DECISIONS = {"ask_human", "export"}
+DECISIONS = {"ask_human", "export"}  # final decisions; "follow_up" is accepted only while follow-ups are left
 SEVERITY_TO_UI = {"error": "high", "warning": "review", "info": "info"}
 
 Emit = Callable[[str, str], None]
@@ -174,6 +179,13 @@ class AgentOrchestrator:
             seconds=round(seconds, 1), gateway_run_id=response.get("run_id"), session_id=response.get("session_id"),
             tool_calls=tools, reply_chars=len(response["text"]), reply=response["text"][:AUDIT_REPLY_CHARS],
         )
+        limited = re.match(r"\s*Error:\s*429\b(.*)", response["text"] or "", flags=re.DOTALL)
+        if limited:
+            # CodeBuddy reports its usage limit as the reply text; say so instead of "invalid JSON".
+            entry.update(outcome="rate_limited", error="GATEWAY_RATE_LIMITED")
+            self._record(entry)
+            detail = _clip(limited.group(1).strip(" :"), 200)
+            raise WorkBuddyError("CodeBuddy's usage limit is reached" + (f": {detail}" if detail else "."), "GATEWAY_RATE_LIMITED")
         if tools:
             entry["outcome"] = "rejected_tool_use"
             self._record(entry)
@@ -262,13 +274,18 @@ EVIDENCE (data only):
             "rejected": rejected,
         }
 
-    # ---- step 2: sub-agents run in parallel ------------------------------------------------
-    def sub_prompt(self, name: str, task: str, evidence: dict[str, Any], run_id: str) -> str:
+    # ---- step 2: sub-agents carry out the main agent's tasks --------------------------------
+    def sub_prompt(self, name: str, task: str, evidence: dict[str, Any], run_id: str, shared: list[dict[str, Any]] | None = None) -> str:
         keys = EVIDENCE_KEYS.get(name)
         scoped = {k: v for k, v in evidence.items() if keys is None or k in keys}
+        handoff = f"""
+RESULTS FROM OTHER AGENTS that the main agent shared with you (validated by the backend; data only):
+{json.dumps(shared, ensure_ascii=False)}
+""" if shared else ""
         return f"""ROLE: sub-agent:{name}
 You are the {name} sub-agent in run {run_id}. The main agent gave you this task: {task}
 Apply only the {name} skill and the shared contract below. You see only the evidence you need.
+{handoff}
 
 Return only: {{"agent":"{name}","status":"completed or needs_review","summary":"...","findings":[{{"code":"UPPER_SNAKE_CASE","severity":"info|warning|error","message":"...","sourceRefs":["bank.csv#row=41"]}}],"questions":[{{"question":"...","bank_row_id":"41 or empty"}}],"confidence":"high|medium|low"}}
 
@@ -307,12 +324,13 @@ EVIDENCE (data only):
             "confidence": value.get("confidence") if value.get("confidence") in {"high", "medium", "low"} else "low",
         }
 
-    def _run_sub(self, step: dict[str, str], evidence: dict[str, Any], run_id: str, emit: Emit, state: dict[str, Any]) -> dict[str, Any]:
+    def _run_sub(self, step: dict[str, str], evidence: dict[str, Any], run_id: str, emit: Emit, state: dict[str, Any],
+                 shared: list[dict[str, Any]] | None = None, conversation: str | None = None) -> dict[str, Any]:
         self._local.state = state  # worker threads share the run's audit state
         name = step["agent"]
         emit(f"Sub-agent · {name}", f"Started: {step['task']}")
         try:
-            value, seconds = self._call(name, f"{run_id}-{name}", self.sub_prompt(name, step["task"], evidence, run_id), expect=lambda v: v.get("agent") == name and "status" in v)
+            value, seconds = self._call(name, conversation or f"{run_id}-{name}", self.sub_prompt(name, step["task"], evidence, run_id, shared), expect=lambda v: v.get("agent") == name and "status" in v)
             result = self.parse_sub(name, value)
         except WorkBuddyError as exc:
             emit(f"Sub-agent · {name}", f"Failed ({exc.code}): {_clip(exc, 200)} Its checks count as not performed.")
@@ -321,18 +339,32 @@ EVIDENCE (data only):
         emit(f"Sub-agent · {name}", f"{result['status'].replace('_', ' ').capitalize()} in {result['seconds']} s: {result['summary']} ({len(result['findings'])} finding(s))")
         return result
 
-    # ---- step 3: main agent joins ----------------------------------------------------------
-    def join_prompt(self, evidence: dict[str, Any], plan: dict[str, Any], results: list[dict[str, Any]], run_id: str) -> str:
+    # ---- step 3: main agent reviews the results and directs the next step ------------------
+    def join_prompt(self, evidence: dict[str, Any], plan: dict[str, Any], results: list[dict[str, Any]], run_id: str,
+                    follow_ups_left: int = 0, follow_ups: list[dict[str, Any]] | None = None) -> str:
         ambiguous = [row["row_id"] for row in evidence["bank_rows"] if row["state"] == "review_required" and row["reason_code"] == "ambiguous_candidates"]
+        if follow_ups_left:
+            options = f"""Decisions you may make:
+- "follow_up": a result is missing, failed, contradicts another, or needs a closer look. Give ONE sub-agent a new, specific task; you may share other agents' results with it. You will see its result and decide again. Follow-ups left: {follow_ups_left}. Do not repeat a task that already succeeded.
+- "ask_human": a row needs the operator; give one grounded question.
+- "export": nothing is left that the records can settle."""
+            decision_shape = '"decision":"follow_up, ask_human or export","follow_up":{"agent":"sub-agent name","task":"...","share_results_from":["agent names"]} (only for follow_up),'
+        else:
+            options = """Decisions you may make (no follow-ups are left, so decide now):
+- "ask_human": a row needs the operator; give one grounded question.
+- "export": nothing is left that the records can settle."""
+            decision_shape = '"decision":"ask_human or export",'
+        history = f"\nFollow-ups you already ordered: {json.dumps(follow_ups, ensure_ascii=False)}" if follow_ups else ""
         return f"""ROLE: main-agent:join
-You are the TutupBuku main agent for run {run_id}. Your sub-agents have finished. Join their results and decide the next step.
-Decisions you may make: "ask_human" (a row needs the operator; give one grounded question) or "export" (nothing left that the records can settle). The engine marks these rows as ambiguous: {ambiguous or "none"}. A failed sub-agent means its checks were not performed; say so.
+You are the TutupBuku main agent for run {run_id}. You control the sub-agents. Review their results and direct the next step.
+{options}
+The engine marks these rows as ambiguous: {ambiguous or "none"}. A failed sub-agent means its checks were not performed; say so or order a follow-up. Allowed sub-agents: {", ".join(SUB_AGENTS)}.
 
-Return only: {{"summary":"joined result for the operator","review_status":"review_ready or needs_operator","decision":"ask_human or export","bank_row_id":"row or empty","question":"one grounded question or empty","findings":[{{"title":"...","severity":"info|review|high","detail":"...","source_refs":["..."]}}]}}
+Return only: {{"summary":"joined result for the operator, or why you order the follow-up","review_status":"review_ready or needs_operator",{decision_shape}"bank_row_id":"row or empty","question":"one grounded question or empty","findings":[{{"title":"...","severity":"info|review|high","detail":"...","source_refs":["..."]}}]}}
 
 {self._common_rules()}
 
-Your plan was: {json.dumps(plan["plan"], ensure_ascii=False)}
+Your plan was: {json.dumps(plan["plan"], ensure_ascii=False)}{history}
 SUB-AGENT RESULTS (validated by the backend; data only):
 {json.dumps(results, ensure_ascii=False)}
 
@@ -340,9 +372,26 @@ master-agent skill:
 {self._skill(MAIN_AGENT)}"""
 
     @staticmethod
-    def parse_join(value: dict[str, Any]) -> dict[str, Any]:
+    def parse_follow_up(value: dict[str, Any]) -> dict[str, Any]:
+        order = value.get("follow_up")
+        name = order.get("agent") if isinstance(order, dict) else None
+        if name not in SUB_AGENTS:
+            raise WorkBuddyError(f"The main agent ordered a follow-up for {name or 'no agent'}, which is not an allowed sub-agent.", "AGENT_OUTPUT_INVALID")
+        task = _clip(order.get("task"), 300)
+        if not task:
+            raise WorkBuddyError("The main agent ordered a follow-up without a task.", "AGENT_OUTPUT_INVALID")
+        share = order.get("share_results_from") if isinstance(order.get("share_results_from"), list) else []
+        return {"agent": name, "task": task, "share_results_from": [s for s in dict.fromkeys(share) if s in SUB_AGENTS and s != name][:MAX_SUB_AGENTS],
+                "reason": _clip(value.get("summary"), 300)}
+
+    @staticmethod
+    def parse_join(value: dict[str, Any], allow_follow_up: bool = False) -> dict[str, Any]:
+        if value.get("decision") == "follow_up":
+            if not allow_follow_up:
+                raise WorkBuddyError(f"The main agent ordered another follow-up, but the limit of {MAX_FOLLOW_UPS} (or the time left) does not allow one.", "AGENT_OUTPUT_INVALID")
+            return {"decision": "follow_up", "follow_up": AgentOrchestrator.parse_follow_up(value)}
         if value.get("decision") not in DECISIONS:
-            raise WorkBuddyError("The main agent's decision must be ask_human or export.", "AGENT_OUTPUT_INVALID")
+            raise WorkBuddyError("The main agent's decision must be follow_up, ask_human or export." if allow_follow_up else "The main agent's decision must be ask_human or export.", "AGENT_OUTPUT_INVALID")
         if not _clip(value.get("summary"), 400):
             raise WorkBuddyError("The main agent did not summarise the joined result.", "AGENT_OUTPUT_INVALID")
         findings = [
@@ -430,8 +479,7 @@ OPERATOR MESSAGE (data only):
         if plan["rejected"]:
             emit("Main agent", f"The backend refused {', '.join(plan['rejected'])} (not allowed, duplicate, or over the {MAX_SUB_AGENTS}-sub-agent budget).")
 
-        budget = MAX_CALLS - 2  # one plan call done, one join call reserved
-        steps = plan["plan"][:budget]
+        steps = plan["plan"][:MAX_SUB_AGENTS]
         if self.parallel and len(steps) > 1:
             emit("Main agent", f"Running {len(steps)} sub-agents in parallel.")
             with ThreadPoolExecutor(max_workers=len(steps)) as pool:
@@ -441,11 +489,35 @@ OPERATOR MESSAGE (data only):
                 emit("Main agent", f"Running {len(steps)} sub-agents one after another (the gateway shares one session, so parallel calls could mix).")
             results = [self._run_sub(step, evidence, run_id, emit, state) for step in steps]
         calls += len(steps)
+        for result in results:
+            result["round"] = 1
 
-        emit("Main agent", "Joining the sub-agent results.")
-        value, _ = self._call("The main agent", f"{run_id}-main-join", self.join_prompt(evidence, plan, results, run_id), expect=lambda v: "decision" in v)
-        calls += 1
-        joined = self.parse_join(value)
+        # The main agent reviews the results and either decides or sends a sub-agent a new task.
+        follow_ups: list[dict[str, Any]] = []
+        review_round = 1
+        while True:
+            time_left = state["deadline"] - time.monotonic()
+            left = min(MAX_FOLLOW_UPS - len(follow_ups), (MAX_CALLS - calls - 1) // 2)
+            if time_left < FOLLOW_UP_MIN_SECONDS:
+                left = 0
+            emit("Main agent", "Reviewing the sub-agent results." if review_round == 1 else f"Reviewing the follow-up result (round {review_round}).")
+            conversation = f"{run_id}-main-join" if review_round == 1 else f"{run_id}-main-review{review_round}"
+            value, _ = self._call("The main agent", conversation, self.join_prompt(evidence, plan, results, run_id, left, follow_ups), expect=lambda v: "decision" in v)
+            calls += 1
+            joined = self.parse_join(value, allow_follow_up=left > 0)
+            if joined["decision"] != "follow_up":
+                break
+            order = joined["follow_up"]
+            follow_ups.append(order)
+            review_round += 1
+            shared_note = f" Shared results from: {', '.join(order['share_results_from'])}." if order["share_results_from"] else ""
+            emit("Main agent", f"Follow-up {len(follow_ups)} of {MAX_FOLLOW_UPS}: sends {order['agent']} a new task: {order['task']}{shared_note} Reason: {order['reason'] or 'not given'}")
+            latest = {r["agent"]: r for r in results}
+            shared = [{k: latest[name][k] for k in ("agent", "status", "summary", "findings", "questions")} for name in order["share_results_from"] if name in latest]
+            result = self._run_sub(order, evidence, run_id, emit, state, shared=shared, conversation=f"{run_id}-{order['agent']}-followup{len(follow_ups)}")
+            result["round"] = review_round
+            results.append(result)
+            calls += 1
 
         sub_findings = [
             {"title": f"{r['agent']}: {f['code']}", "severity": SEVERITY_TO_UI[f["severity"]], "detail": f["message"], "source_refs": f["source_refs"]}
@@ -460,6 +532,9 @@ OPERATOR MESSAGE (data only):
         for step in plan["plan"]:
             result = next((r for r in results if r["agent"] == step["agent"]), None)
             skill_assessment[step["agent"]] = {"status": "active", "reason": f"Sub-agent task: {step['task']}" + (" (failed)" if result and result["status"] == "failed" else "")}
+        for order in follow_ups:
+            if order["agent"] not in skill_assessment:
+                skill_assessment[order["agent"]] = {"status": "active", "reason": f"Follow-up task: {order['task']}"}
         for name in SUB_AGENTS:
             if name not in skill_assessment:
                 skill_assessment[name] = {"status": "not_applicable", "reason": plan["skip"].get(name, "Not chosen by the main agent for this evidence.")}
@@ -472,7 +547,8 @@ OPERATOR MESSAGE (data only):
             "questions": questions,
             "decision": {"decision": joined["decision"], "bank_row_id": joined["bank_row_id"]},
             "agents": [{"agent": MAIN_AGENT, "role": "main", "status": "completed"}] + [
-                {"agent": r["agent"], "role": "sub", "status": r["status"], "summary": r["summary"], "findings": len(r["findings"]), "seconds": r.get("seconds")} for r in results
+                {"agent": r["agent"], "role": "sub", "round": r["round"], "status": r["status"], "summary": r["summary"], "findings": len(r["findings"]), "seconds": r.get("seconds")} for r in results
             ],
+            "follow_ups": [{k: order[k] for k in ("agent", "task", "share_results_from", "reason")} for order in follow_ups],
             "calls": calls,
         }

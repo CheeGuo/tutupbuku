@@ -18,7 +18,9 @@ export function Execution() {
   const { cases, caseId, caseData, draft, setDraft, run, connection, error, pending, busy, start, reconnect, changeCase, changeGoal, setError } = useExecution();
   const agent = useAgent();
   const [workflow, setWorkflow] = useState<'demo' | 'run'>(run ? 'run' : 'demo');
-  const [hideRun, setHideRun] = useState(false);   // the month-end run is a separate conversation; a new chat hides it
+  // The month-end run is a separate conversation: the page opens on an empty chat, and the run is shown only when
+  // the user starts one or opens it from History.
+  const [hideRun, setHideRun] = useState(true);
   const [files, setFiles] = useState<File[]>([]);
   const [fileError, setFileError] = useState('');
   const [drag, setDrag] = useState(false);
@@ -60,8 +62,11 @@ export function Execution() {
   const active = showRun || agent.active;
   const stateLine = demo ? (agent.busy ? 'Working' : agent.stages.includes('waiting') ? 'Waiting for you' : agent.stages.every(s => s === 'completed') ? 'Done' : 'Ready') : run ? stageLabel(run.status) : '';
 
+  // Waiting for the agent's answer to the last message (chat replies and lookups; file processing shows its own steps).
+  const responding = agent.busy && agent.messages[agent.messages.length - 1]?.kind === 'user';
+
   useEffect(() => { end.current?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' }); },
-    [run?.events.length, run?.status, agent.messages.length]);
+    [run?.events.length, run?.status, agent.messages.length, responding]);
 
   const describeStatus = () => !run ? 'No month-end review run has started.' : `${stageLabel(run.status)}. ${runStages.filter(s => s.status === 'completed').length} of ${runStages.length} stages done. ${run.error || (run.pack ? `${run.pack.files.length} files exported; ${run.pack.open_item_count} items remain open.` : 'Inspect the stage list for details.')}`;
   const lookup = (prompt: string): boolean => {
@@ -135,6 +140,14 @@ export function Execution() {
         {files.length > 0 && <ul className="attachments" aria-label="Attached files">{files.map((f, i) => <li key={`${f.name}${i}`}><span>📎 {f.name}</span><button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles(files.filter((_, j) => j !== i))}>✕</button></li>)}</ul>}
         <textarea ref={composer} id="execution-goal" rows={1} maxLength={2000} value={draft} disabled={pending}
           onChange={e => { setDraft(e.target.value); changeGoal(e.target.value); }}
+          onPaste={e => {
+            // Pasting a screenshot or a copied PDF attaches it; pasting text still types as usual.
+            const pasted = Array.from(e.clipboardData.files);
+            if (!pasted.length) return;
+            e.preventDefault();
+            const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+            takeFiles(pasted.map((f, i) => (f.name && f.name !== 'image.png' ? f : new File([f], `pasted-${stamp}${i ? `-${i + 1}` : ''}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type }))));
+          }}
           placeholder={active ? 'Reply, attach a file, or ask for status…' : 'Ask to submit a claim or process a document…'}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} />
       </div>
@@ -145,7 +158,7 @@ export function Execution() {
       {active ? <div className="quick" aria-label="Quick lookups">{COMMANDS.map(c => <button key={c} type="button" onClick={() => lookup(c)}>{c}</button>)}
         <details className="suggest"><summary>suggestions</summary><div className="suggest-panel">{STARTERS.map(s => <button key={s.id} type="button" disabled={working} onClick={e => { e.currentTarget.closest('details')!.open = false; setWorkflow('demo'); agent.startIntent(s.id); }}>{s.label}</button>)}
           {run && !busy && <button type="button" onClick={e => { e.currentTarget.closest('details')!.open = false; setDraft(DEFAULT_GOAL); changeGoal(DEFAULT_GOAL); composer.current?.focus(); }}>Prepare the month-end review pack</button>}</div></details></div>
-        : <span className="hint">Enter to send · Shift + Enter for a new line · attach PDFs or images with the paperclip</span>}
+        : <span className="hint">Enter to send · Shift + Enter for a new line · attach PDFs or images with the paperclip, or paste them</span>}
       {cases.length > 1 && <label className="case-pick">Case <select value={caseId} disabled={Boolean(busy)} onChange={e => changeCase(e.target.value)} aria-label="Review case">
         {cases.map(item => <option key={item.case_id} value={item.case_id}>{item.business_name}</option>)}</select></label>}
     </div>
@@ -176,17 +189,10 @@ export function Execution() {
     <section className="live-main" aria-label="Agentic Live Execution conversation">
       {chatBar}
       {!active ? <div className="hero">
-        <span className="kicker">Agentic month-end workspace</span>
         <h1>What would you like to do?</h1>
         <p>Submit a claim or process a purchasing document. Attach files right here and I will read them, check them and save the result.</p>
         {error && connection !== 'offline' && <div className="notice notice-error" role="alert"><div><strong>Action required</strong><p>{error}</p></div><button className="btn btn-sm" onClick={reconnect}>Reconnect</button></div>}
         {composerForm}
-        <div className="starters" aria-label="Suggested prompts">
-          {(['Claims', 'Purchasing'] as const).map(group => <div key={group} className="starter-group"><span className="starter-label">{group}</span>
-            <div className="starter-grid">{STARTERS.filter(s => s.group === group).map(s => <button key={s.id} type="button" className="chip starter-card" onClick={() => { setWorkflow('demo'); agent.startIntent(s.id); }}>
-              <svg viewBox="0 0 24 24" aria-hidden="true">{group === 'Claims' ? <><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" /><path d="M9 8h6M9 12h6" /></> : <><path d="M6 3h9l4 4v14H6z" /><path d="M15 3v5h5M9 13h6M9 17h6" /></>}</svg>
-              <span>{s.label}<small>{HINTS[s.id]}</small></span></button>)}</div></div>)}
-        </div>
       </div> : <>
         <div className="thread">
           {showRun && run && <>
@@ -210,6 +216,7 @@ export function Execution() {
             </section>}
           </>}
           {agent.messages.map(msg => <ChatMessage key={msg.id} msg={msg} onChoose={agent.choose} />)}
+          {responding && <div className="working" role="status" aria-live="polite"><span className="dots" aria-hidden="true"><i /><i /><i /></span>TutupBuku is thinking…</div>}
           <div ref={end} />
         </div>
         {error && connection !== 'offline' && <div className="notice notice-error" role="alert"><div><strong>Action required</strong><p>{error}</p></div><button className="btn btn-sm" onClick={reconnect}>Reconnect</button></div>}

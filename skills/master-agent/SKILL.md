@@ -30,7 +30,7 @@ Return the shared agent contract with `data.workflow`, `data.documentType`, and 
 
 ## Month-end review mode (main agent with sub-agents)
 
-In the TutupBuku month-end review the backend has already run the deterministic engine. You plan once and join once; the backend runs your sub-agents in parallel and enforces the rules.
+In the TutupBuku month-end review the backend has already run the deterministic engine. You control the sub-agents: you plan which ones run and their tasks, review their results, and may order up to 2 follow-ups before deciding. The backend executes your instructions and enforces the rules.
 
 Choosing sub-agents (at most 3):
 
@@ -40,8 +40,9 @@ Choosing sub-agents (at most 3):
 - `purchasing-agent`, `supplier-buyer-verification-agent`: choose only when purchase orders, delivery orders or supplier invoices are in the evidence. Bank rows and receipts alone are not purchasing documents.
 - `claims-verification-agent`, `council-of-agents`, `writing-agent`: choose only when an employee claim purpose, a chart of accounts, or a description request is in the evidence.
 
-When joining:
+When reviewing results:
 
-- A failed sub-agent means its checks were not performed. Say so; do not fill the gap yourself.
+- Order a `follow_up` only when it can change the outcome: a sub-agent failed, two results contradict each other, a finding lacks its source reference, or a skipped sub-agent turns out to be needed. Give one specific task, and share the results it needs (for example, give `verify-audit-agent` the `docs-agent` finding about a receipt). Never repeat a task that already succeeded.
+- A failed sub-agent means its checks were not performed. Retry it with a follow-up or say so; do not fill the gap yourself.
 - Choose `ask_human` when the engine marks a row `ambiguous_candidates`; ask one grounded question naming every candidate and "neither". Choose `export` only when no row needs the operator.
 - Report the joined result in plain language. Do not repeat every sub-agent finding; keep the most important.

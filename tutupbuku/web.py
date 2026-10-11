@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .engine import InputValidationError
 from .execution import ExecutionError, ExecutionManager
+from .extract import ExtractionError, extract_document
 from .records import RecordStoreError
 from .models import MAX_UPLOAD_BYTES, SUPPORTED_RECEIPT_SUFFIXES, SUPPORTED_ROOT_FILES
 from .service import TutupBukuService
@@ -258,6 +259,28 @@ def create_server(
                     self._check_keys(payload, {"records", "expected_version"})
                     version = records.save(payload.get("records"), payload.get("expected_version"))
                     self._send_json(HTTPStatus.OK, {"version": version, "storage": {"mode": records.mode, "ok": True}})
+                elif parsed.path == "/api/extract":
+                    self._check_keys(payload, {"filename", "content_base64"})
+                    filename, encoded = payload.get("filename"), payload.get("content_base64")
+                    if not isinstance(filename, str) or not isinstance(encoded, str):
+                        raise ValueError("filename and content_base64 must be strings")
+                    try:
+                        content = base64.b64decode(encoded, validate=True)
+                    except (binascii.Error, ValueError) as exc:
+                        raise ValueError("content_base64 is not valid base64") from exc
+                    if not re.search(r"\.(pdf|jpe?g|png|webp|gif|bmp|tiff?)$", filename, re.I):
+                        self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Upload a PDF or an image (JPG, PNG, WEBP, GIF, BMP or TIFF).")
+                        return
+                    try:
+                        self._send_json(HTTPStatus.OK, extract_document(content, filename[:200]))
+                    except ExtractionError as exc:
+                        self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+                elif parsed.path == "/api/claims/council":
+                    if executions is None:
+                        self._error(HTTPStatus.SERVICE_UNAVAILABLE, "execution service is not configured")
+                        return
+                    self._check_keys(payload, {"claim", "accounts"})
+                    self._send_json(HTTPStatus.OK, executions.council(payload.get("claim"), payload.get("accounts")))
                 elif parsed.path == "/api/chat":
                     if executions is None:
                         self._error(HTTPStatus.SERVICE_UNAVAILABLE, "execution service is not configured")
@@ -450,6 +473,13 @@ def create_server(
                 content_type += "; charset=utf-8"
             self._send_bytes(HTTPStatus.OK, content_type, content)
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    class QuietServer(ThreadingHTTPServer):
+        def handle_error(self, request, client_address) -> None:  # noqa: ANN001
+            import sys as _sys
+            if isinstance(_sys.exc_info()[1], (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+                return
+            super().handle_error(request, client_address)
+
+    server = QuietServer((host, port), Handler)
     server.daemon_threads = True
     return server

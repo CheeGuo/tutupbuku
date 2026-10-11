@@ -58,7 +58,7 @@ export interface DocLink {
   confirmedBy: string | null;
 }
 
-export interface Account { code: string; name: string }
+export interface Account { code: string; name: string; useWhen?: string }
 
 /** PLAUSIBLE and NEEDS_REVIEW are both "Pending" for the reviewer; only APPROVED is exportable. */
 export type ClaimStatus = 'PLAUSIBLE' | 'NEEDS_REVIEW' | 'APPROVED' | 'REJECTED';
