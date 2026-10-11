@@ -12,7 +12,6 @@ const NAV = [
 ];
 
 export function AppShell() {
-  const { connection } = useExecution();
   const { issues, claims } = useData();
   const open = issues.filter(i => i.status === 'OPEN' || i.status === 'UNDER_REVIEW').length + claims.filter(c => c.status === 'PLAUSIBLE' || c.status === 'NEEDS_REVIEW').length;
   return <div className="shell">
@@ -24,10 +23,6 @@ export function AppShell() {
           {item.label}{item.to === '/issues' && open > 0 && <span className="nav-count" aria-label={`${open} items need action`}>{open}</span>}
         </NavLink>)}
       </nav>
-      <div className={`conn conn-${connection}`} role="status" title="Month-end review service">
-        <span className="conn-dot" aria-hidden="true" />
-        <span className="conn-text">{connection === 'connected' ? 'Review service connected' : connection === 'checking' ? 'Connecting…' : 'Review service offline'}</span>
-      </div>
     </header>
     <main id="content" className="content" tabIndex={-1}><Outlet /></main>
     <Toasts />

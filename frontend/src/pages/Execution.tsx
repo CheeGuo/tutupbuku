@@ -179,7 +179,7 @@ export function Execution() {
         <span className="kicker">Agentic month-end workspace</span>
         <h1>What would you like to do?</h1>
         <p>Submit a claim or process a purchasing document. Attach files right here and I will read them, check them and save the result.</p>
-        {error && <div className="notice notice-error" role="alert"><div><strong>{connection === 'offline' ? 'Review service offline' : 'Action required'}</strong><p>{error}</p></div><button className="btn btn-sm" onClick={reconnect}>Reconnect</button></div>}
+        {error && connection !== 'offline' && <div className="notice notice-error" role="alert"><div><strong>Action required</strong><p>{error}</p></div><button className="btn btn-sm" onClick={reconnect}>Reconnect</button></div>}
         {composerForm}
         <div className="starters" aria-label="Suggested prompts">
           {(['Claims', 'Purchasing'] as const).map(group => <div key={group} className="starter-group"><span className="starter-label">{group}</span>
@@ -212,7 +212,7 @@ export function Execution() {
           {agent.messages.map(msg => <ChatMessage key={msg.id} msg={msg} onChoose={agent.choose} />)}
           <div ref={end} />
         </div>
-        {error && <div className="notice notice-error" role="alert"><div><strong>Action required</strong><p>{error}</p></div><button className="btn btn-sm" onClick={reconnect}>Reconnect</button></div>}
+        {error && connection !== 'offline' && <div className="notice notice-error" role="alert"><div><strong>Action required</strong><p>{error}</p></div><button className="btn btn-sm" onClick={reconnect}>Reconnect</button></div>}
         {composerForm}
       </>}
     </section>
