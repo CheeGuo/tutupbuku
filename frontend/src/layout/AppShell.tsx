@@ -1,7 +1,6 @@
 import React from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
-import { useExecution } from '../lib/execution';
-import { useData } from '../state/store';
+import { useActionItems } from '../lib/actionItems';
 import { Toasts } from '../components/ui';
 import logo from '../assets/tutupbuku-logo.png';
 
@@ -12,8 +11,7 @@ const NAV = [
 ];
 
 export function AppShell() {
-  const { issues, claims } = useData();
-  const open = issues.filter(i => i.status === 'OPEN' || i.status === 'UNDER_REVIEW').length + claims.filter(c => c.status === 'PLAUSIBLE' || c.status === 'NEEDS_REVIEW').length;
+  const { total: open } = useActionItems();
   return <div className="shell">
     <a className="skip-link" href="#content">Skip to content</a>
     <header className="topbar">

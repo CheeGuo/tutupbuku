@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useData } from '../state/store';
 import { sha256 } from '../lib/agent';
 import { useExecution } from '../lib/execution';
+import { useActionItems, type Item, isActive, isPending } from '../lib/actionItems';
 import type { Claim, DocRecord, EvidenceRow, Issue, IssueStatus, Severity } from '../types';
 import { CHART_OF_ACCOUNTS } from '../data/dummy';
 import { claimDoc, docAmount, docDate, docNumber, docParty, field, fieldDisplay as fieldDisplay2, fieldInputValue, poIdOf } from '../lib/docs';
@@ -13,10 +14,7 @@ import { RecordDialog } from '../components/RecordDialog';
 
 type Tab = 'issues' | 'review';
 type StatusFilter = 'ACTIVE' | 'ALL' | IssueStatus;
-type Item = Issue & { live?: boolean };
 const RANK: Record<Severity, number> = { HIGH: 0, WARNING: 1, INFO: 2 };
-const isActive = (i: Issue) => i.status === 'OPEN' || i.status === 'UNDER_REVIEW';
-const isPending = (c: Claim) => c.status === 'PLAUSIBLE' || c.status === 'NEEDS_REVIEW';
 
 export function ActionItems() {
   const [params, setParams] = useSearchParams();
@@ -24,17 +22,7 @@ export function ActionItems() {
   const { run } = useExecution();
   const tab: Tab = params.get('tab') === 'review' || (params.get('claim') && !params.get('issue')) ? 'review' : 'issues';
   const set = (patch: Record<string, string | null>) => { const next = new URLSearchParams(params); Object.entries(patch).forEach(([k, v]) => (v ? next.set(k, v) : next.delete(k))); setParams(next); };
-  const pendingCount = data.claims.filter(isPending).length;
-
-  // The month-end run's findings are ordinary action items; the run id is kept only as provenance.
-  const liveItems: Item[] = run ? [
-    ...(run.input_issues || []).map((x): Item => ({ id: `RUN-${x.id}`, ruleCode: 'RUN_INPUT', typeLabel: 'Blocked input', title: x.message, severity: 'HIGH', status: 'OPEN', docIds: [], live: true,
-      detected: x.message, why: `The run stopped on this input. Location: ${x.location}.`, suggested: [x.required_action], evidence: x.source_refs.map(r => ({ label: 'Source', found: r })), createdAt: run.started_at })),
-    ...(run.matching?.exceptions || []).map((x): Item => ({ id: `RUN-${x.exception_id}`, ruleCode: 'RUN_EXCEPTION', typeLabel: 'Bank-row match', title: x.title, severity: 'WARNING', status: 'OPEN', docIds: [], live: true,
-      detected: x.reason, why: `Reported by the month-end run for bank row ${x.bank_row_id} (priority ${x.priority}).`, suggested: [x.required_action], evidence: x.source_refs.map(r => ({ label: 'Source', found: r })), createdAt: run.started_at })),
-  ] : [];
-  const items: Item[] = [...data.issues, ...liveItems];
-  const activeCount = items.filter(isActive).length;
+  const { items, activeCount, pendingCount } = useActionItems();
 
   return <div className="page">
     <header className="page-head"><div><h1>Action Items</h1><p>Investigate what the checks found, and decide on claims that need a person.</p></div></header>
@@ -168,7 +156,6 @@ function Resolution({ issue, records, claim }: { issue: Issue; records: DocRecor
         {diff.length > 0 && <div className="compare-card">
           <strong>Did the supplier send a corrected invoice or credit note?</strong>
           <p className="muted">Upload it here. It replaces {docNumber(inv)}, which stays in Documents as superseded, and is checked against {docNumber(po)} straight away.</p>
-          <p className="sample-note">No OCR is connected in this build: the corrected invoice is read as the same items billed at the PO prices, and its number is taken from the file name.</p>
           <div className="actions"><label className={`btn btn-primary${reading !== 'idle' ? ' disabled' : ''}`} aria-disabled={reading !== 'idle'}>
             {reading === 'reading' ? 'Reading the file…' : reading === 'checking' ? 'Checking against the PO…' : 'Upload corrected invoice'}
             <input type="file" accept="application/pdf,image/*" hidden disabled={reading !== 'idle'} onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; void onCorrected(f); }} /></label></div>

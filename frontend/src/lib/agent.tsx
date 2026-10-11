@@ -240,7 +240,12 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     const advance = async (i: number) => { setStage(i, 'completed'); if (i < 4) setStage(i + 1, 'running'); update(i + 1); await sleep(i < 4 ? Math.round(STEP_MS[i + 1] * (0.85 + Math.random() * 0.3)) : 700); };
     try {
       setStage(0, 'running'); touch();
-      if (!claims && DEMO_INVOICE_1019.fileMatch.test(file.name)) data.discardInvoice('BST-INV-26-1019');   // re-running the demo must not trip the duplicate check
+      if (!claims && DEMO_INVOICE_1019.fileMatch.test(file.name)) {
+        // Re-running the demo: drop the earlier copy and retire any Fix now / Review later buttons still waiting from the earlier run,
+        // so a stale button can never save a second copy or raise a second issue.
+        data.discardInvoice('BST-INV-26-1019');
+        setStore(st => ({ ...st, chats: st.chats.map(c => ({ ...c, messages: c.messages.map(x => (x.kind === 'quick' && x.ctx?.invoiceNo === 'BST-INV-26-1019' ? { ...x, used: true } : x)) })) }));
+      }
       await sleep(900);
       const hash = await sha256(file); await sleep(1400); await advance(0);
       const { docs, links, claims: allClaims, issues } = data.latest.current;
@@ -392,6 +397,8 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     setMessages(items => items.map(x => (x.id === msgId && x.kind === 'quick' ? { ...x, used: true } : x)));
     if ((optionId === 'fix_now' || optionId === 'review_later') && picked?.kind === 'quick' && picked.ctx?.bundle) {
       const ctx = picked.ctx; const { doc, links, issues } = ctx.bundle;
+      const already = data.latest.current.docs.some(x => x.docType === 'invoice' && x.status !== 'REJECTED' && docNumber(x) === ctx.invoiceNo);
+      if (already) { say(`${ctx.invoiceNo} is already saved, so I did not save it again. You can find it in Documents, and any open issue is in Action Items.`, { to: '/issues', action: 'Open Action Items' }); return; }
       const finish = () => { setMessages(items => items.map(x => (x.id === ctx.stepsId && x.kind === 'steps' ? { ...x, steps: x.steps.map(st => ({ ...st, state: 'done' as const })) } : x))); setStage(4, 'completed'); };
       add({ id: uid(), kind: 'user', text: optionId === 'fix_now' ? 'Fix now' : 'Review later', files: [] });
       void (async () => {
