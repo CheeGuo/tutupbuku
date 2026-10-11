@@ -22,6 +22,7 @@ from threading import Thread
 from .agents import AgentOrchestrator
 from .execution import ExecutionManager
 from .mcp_server import MCPServer, serve_stdio
+from .records import build_record_store
 from .service import TutupBukuService
 from .web import create_server
 from .workbuddy import AgentReviewJobs, WorkBuddyClient, WorkBuddyError
@@ -107,7 +108,10 @@ def main() -> None:
     if frontend_dist is not None and not (frontend_dist / "index.html").is_file():
         print("Warning: frontend/dist/index.html not found. Run `npm run build` in the frontend folder.", file=sys.stderr, flush=True)
 
-    browser = create_server(service, "127.0.0.1", args.port, api_token=api_token, agent_jobs=jobs, executions=executions, frontend_dist=frontend_dist)
+    records = build_record_store(dict(os.environ), project_root)
+    storage = records.status()
+    print(f"Records: {records.mode} - {'OK' if storage['ok'] else 'NOT AVAILABLE'}: {storage['message']}", file=sys.stderr, flush=True)
+    browser = create_server(service, "127.0.0.1", args.port, api_token=api_token, agent_jobs=jobs, executions=executions, frontend_dist=frontend_dist, records=records)
     print(f"TutupBuku browser API: http://127.0.0.1:{browser.server_port}/", file=sys.stderr, flush=True)
     print("WorkBuddy agent: " + ("configured (main agent + sub-agents, each a separate gateway call)" if reviewer else "not configured (runs use the deterministic engine only)"), file=sys.stderr, flush=True)
 

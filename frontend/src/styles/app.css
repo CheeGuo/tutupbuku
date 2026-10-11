@@ -580,3 +580,5 @@ label.btn.disabled { color: var(--ink-3); background: var(--sunken); border-colo
 @media (max-width: 980px) { .live.is-idle .hero { text-align: left; justify-items: stretch; } .live.is-idle .hero > p { max-width: none; } .live.is-idle .orbit { height: clamp(240px, 36vh, 340px); } }
 
 .filterbar .field-search { flex: 1 1 280px; min-width: 220px; }
+
+.storage-note { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }

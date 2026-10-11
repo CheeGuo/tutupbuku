@@ -60,7 +60,15 @@ export function Documents() {
 
   return <div className="page">
     <header className="page-head docs-head">
-      <div><h1>Documents</h1><p>Saved records and how they connect. To change a record, use Action Items.</p></div>
+      <div><h1>Documents</h1><p>Saved records and how they connect. To change a record, use Action Items.</p>
+        <p className="storage-note" role="status" title={data.storage.message || ''}>
+          <span className={`pill ${data.storage.ok ? (data.storage.mode === 'supabase' ? 'pill-mint' : 'pill-blue') : 'pill-red'}`}>
+            {data.storage.mode === 'loading' ? 'Loading records…'
+              : !data.storage.ok ? (data.storage.mode === 'offline' ? 'Not connected: changes stay in this browser' : 'Not saved')
+              : data.storage.mode === 'supabase' ? 'Saved in Supabase' : 'Saved on the server (no database configured)'}
+          </span>
+          {!data.storage.ok && data.storage.message && <span className="muted"> {data.storage.message}</span>}
+        </p></div>
       <div className="export-bar" role="group" aria-label="Download CSV">
         <button type="button" className="btn btn-primary" onClick={() => data.exportCsv('purchasing', range)} title="Verified invoices only, within the dates chosen below"><DownloadIcon />Verified invoices CSV<span className="btn-count">{invoicesReady}</span></button>
         <button type="button" className="btn btn-primary" onClick={() => data.exportCsv('claims', range)} title="Approved claims only, within the dates chosen below"><DownloadIcon />Approved claims CSV<span className="btn-count">{claimsReady}</span></button>

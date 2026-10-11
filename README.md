@@ -51,6 +51,24 @@ has no up-to-date CA store and fails TLS verification on the ngrok certificate.
 `py -3.13 scripts/eval_agents.py --runs 3` runs the real agent flow three times on fresh copies of the
 baseline and reports the results as counts (about 5 gateway calls per run).
 
+## Database (Supabase + Prisma)
+
+Documents, purchasing chains, claims, issues and the audit log are stored in Supabase Postgres. The tables
+are defined in `prisma/schema.prisma` and live in their own Postgres schema, `tutupbuku`.
+
+```powershell
+npm install                            # installs Prisma 6.19.3 (repository root)
+py -3.13 -m pip install "psycopg[binary]"
+npm run db:push                        # creates/updates the tables from prisma/schema.prisma
+py -3.13 -m unittest tests.test_records    # includes a real round trip when the database is reachable
+```
+
+`.env` needs `DATABASE_URL` (Supabase transaction pooler, port 6543, `?pgbouncer=true&schema=tutupbuku`) and
+`DIRECT_URL` (session pooler, port 5432, `?schema=tutupbuku`). If Postgres ports are blocked (school Wi-Fi
+blocks 5432/6543), use a hotspot, or paste `prisma/init.sql` into the Supabase SQL editor to create the
+tables. The backend reads and writes the tables over `DATABASE_URL`; the browser never sees credentials.
+Without `DATABASE_URL` the records are kept in a file on the server, and the Documents page says so.
+
 ## API used by the frontend
 
 | Route | Purpose |
@@ -59,6 +77,7 @@ baseline and reports the results as counts (about 5 gateway calls per run).
 | `POST /api/execution` | Start a run: `{case_id, goal, request_id}` |
 | `GET /api/execution[?run_id=]` | Poll the run (stages, events, question, pack) |
 | `POST /api/execution/continue` | Answer the question: `{run_id, expected_version, candidate_id, answer, leave_open}` |
+| `GET /api/records`, `POST /api/records` | Load or save the workspace records `{records, expected_version}` (Supabase) |
 | `POST /api/chat` | One chat message to the real main agent through the gateway: `{message, history}` |
 | `GET /api/exports/<file>`, `GET /api/source/<path>` | Download a pack file or open a source file |
 
@@ -68,7 +87,7 @@ remain for WorkBuddy and tests.
 ## Tests
 
 ```powershell
-python -m unittest tests.test_engine tests.test_exports tests.test_mcp_protocol tests.test_mcp_tools tests.test_web_flow tests.test_workbuddy_client tests.test_workbuddy_skill tests.test_execution tests.test_execution_gateway
+python -m unittest tests.test_engine tests.test_exports tests.test_mcp_protocol tests.test_mcp_tools tests.test_web_flow tests.test_workbuddy_client tests.test_workbuddy_skill tests.test_execution tests.test_execution_gateway tests.test_records
 ```
 
 All data is synthetic. See `TutupBuku — Agentic Month-End Close for SMEs (v3).md` for the full spec.

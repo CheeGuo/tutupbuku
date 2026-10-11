@@ -1,0 +1,187 @@
+// TutupBuku workspace records in Supabase Postgres.
+//
+// Mirrors the frontend types in frontend/src/types.ts. Money is integer sen; dates are ISO strings as the
+// frontend uses them. Everything lives in the `tutupbuku` Postgres schema (set by ?schema=tutupbuku in the
+// URLs), so Prisma never touches other tables in `public`.
+//
+// Create or update the tables:  npm run db:push   (needs DATABASE_URL and DIRECT_URL in .env)
+// The Python backend (tutupbuku/records.py) reads and writes these tables over DATABASE_URL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // transaction pooler, port 6543, ?pgbouncer=true&schema=tutupbuku
+  directUrl = env("DIRECT_URL")   // session pooler, port 5432, ?schema=tutupbuku (used for schema changes)
+}
+
+enum DocType {
+  quotation
+  purchase_order
+  delivery_order
+  invoice
+  payment_advice
+  payment_receipt
+  claim_receipt
+  unclassified
+}
+
+enum DocStatus {
+  UPLOADED
+  EXTRACTED
+  MATCHED
+  NEEDS_REVIEW
+  VERIFIED
+  REJECTED
+}
+
+enum Flow {
+  purchasing
+  claims
+}
+
+enum LinkRelationship {
+  for_po
+  settles_invoice
+}
+
+enum ClaimStatus {
+  PLAUSIBLE
+  NEEDS_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum Severity {
+  INFO
+  WARNING
+  HIGH
+}
+
+enum IssueStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+enum ActorKind {
+  human
+  agent
+}
+
+/// A purchasing or claim document with its extracted fields and line items.
+model Document {
+  id         String    @id
+  docType    DocType   @map("doc_type")
+  flow       Flow
+  filename   String
+  fields     Json      @default("[]") // Field[]: key, label, kind, value, sen?, confidence?
+  lines      Json      @default("[]") // LineItem[]: id, description, quantity, unitSen, totalSen
+  status     DocStatus
+  hash       String
+  version    Int       @default(1)
+  uploadedAt String    @map("uploaded_at")
+  uploadedBy String    @map("uploaded_by")
+  note       String?
+  sourceUrl  String?   @map("source_url")
+  updatedAt  DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  outgoingLinks DocumentLink[] @relation("LinkSource")
+  incomingLinks DocumentLink[] @relation("LinkTarget")
+  claims        Claim[]
+
+  @@index([flow, status])
+  @@index([docType])
+  @@map("documents")
+}
+
+/// A document attached to its purchase order (or a payment settling an invoice).
+model DocumentLink {
+  id           String           @id
+  sourceId     String           @map("source_id")
+  targetId     String           @map("target_id")
+  relationship LinkRelationship
+  confidence   Float
+  confirmedBy  String?          @map("confirmed_by")
+  updatedAt    DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  source Document @relation("LinkSource", fields: [sourceId], references: [id], onDelete: Cascade)
+  target Document @relation("LinkTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@index([sourceId])
+  @@index([targetId])
+  @@map("document_links")
+}
+
+/// An employee expense claim built on a claim-receipt document.
+model Claim {
+  id                      String      @id
+  employee                String
+  receiptDocId            String      @map("receipt_doc_id")
+  employeePurpose         String      @map("employee_purpose")
+  categoryCode            String?     @map("category_code")
+  categoryConfidence      Float       @map("category_confidence")
+  categoryReasoning       String      @map("category_reasoning")
+  alternativeCodes        String[]    @map("alternative_codes")
+  standardizedDescription String      @map("standardized_description")
+  findings                String[]
+  status                  ClaimStatus
+  decision                Json? // { by, at, reason? }
+  updatedAt               DateTime    @default(now()) @updatedAt @map("updated_at")
+
+  receipt Document @relation(fields: [receiptDocId], references: [id], onDelete: Restrict)
+
+  @@index([status])
+  @@map("claims")
+}
+
+/// A review issue raised by a check or an agent, resolved only by a person.
+model Issue {
+  id           String      @id
+  ruleCode     String      @map("rule_code")
+  typeLabel    String      @map("type_label")
+  title        String
+  severity     Severity
+  status       IssueStatus
+  docIds       String[]    @map("doc_ids")
+  claimId      String?     @map("claim_id")
+  fieldKey     String?     @map("field_key")
+  candidateIds String[]    @map("candidate_ids")
+  detected     String
+  why          String
+  suggested    String[]
+  evidence     Json        @default("[]") // EvidenceRow[]: label, expected?, found?, note?
+  createdAt    String      @map("created_at")
+  resolution   String?
+  updatedAt    DateTime    @default(now()) @updatedAt @map("updated_at")
+
+  @@index([status, severity])
+  @@map("issues")
+}
+
+/// Append-only history of what people and agents did.
+model AuditEntry {
+  id        String    @id
+  timestamp String
+  actor     String
+  actorKind ActorKind @map("actor_kind")
+  action    String
+  entityId  String    @map("entity_id")
+  previous  String?
+  next      String?
+
+  @@index([entityId])
+  @@map("audit_entries")
+}
+
+/// Optimistic-concurrency version of the whole record set (key = "version").
+model WorkspaceMeta {
+  key       String   @id
+  value     Int
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("workspace_meta")
+}

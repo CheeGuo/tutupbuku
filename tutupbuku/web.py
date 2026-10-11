@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .engine import InputValidationError
 from .execution import ExecutionError, ExecutionManager
+from .records import RecordStoreError
 from .models import MAX_UPLOAD_BYTES, SUPPORTED_RECEIPT_SUFFIXES, SUPPORTED_ROOT_FILES
 from .service import TutupBukuService
 from .workbuddy import AgentReviewJobs, WorkBuddyError
@@ -46,6 +47,7 @@ def create_server(
     agent_jobs: AgentReviewJobs | None = None,
     executions: ExecutionManager | None = None,
     frontend_dist: Path | None = None,
+    records: Any | None = None,
 ) -> ThreadingHTTPServer:
     """Create the loopback server; an optional bearer token protects tunneled API calls."""
     if host != "127.0.0.1":
@@ -155,6 +157,16 @@ def create_server(
                     self._static("index.html")
                 elif parsed.path in {"/styles.css", "/app.js"}:
                     self._static(parsed.path.lstrip("/"))
+                elif parsed.path == "/api/records":
+                    if records is None:
+                        self._error(HTTPStatus.SERVICE_UNAVAILABLE, "record storage is not configured")
+                        return
+                    try:
+                        loaded = records.load()
+                    except RecordStoreError as exc:
+                        self._send_json(exc.status, {"error": str(exc), "storage": {"mode": records.mode, "ok": False, "message": str(exc)}})
+                        return
+                    self._send_json(HTTPStatus.OK, {"storage": {"mode": records.mode, "ok": True}, **loaded})
                 elif parsed.path == "/api/execution/audit":
                     run_id = query.get("run_id", [None])[0]
                     audit = executions.audit(run_id) if executions is not None and run_id else None
@@ -239,7 +251,14 @@ def create_server(
             try:
                 payload = self._read_json()
                 case_id = self._case_id({}, payload)
-                if parsed.path == "/api/chat":
+                if parsed.path == "/api/records":
+                    if records is None:
+                        self._error(HTTPStatus.SERVICE_UNAVAILABLE, "record storage is not configured")
+                        return
+                    self._check_keys(payload, {"records", "expected_version"})
+                    version = records.save(payload.get("records"), payload.get("expected_version"))
+                    self._send_json(HTTPStatus.OK, {"version": version, "storage": {"mode": records.mode, "ok": True}})
+                elif parsed.path == "/api/chat":
                     if executions is None:
                         self._error(HTTPStatus.SERVICE_UNAVAILABLE, "execution service is not configured")
                         return
@@ -293,6 +312,8 @@ def create_server(
             except OverflowError as exc:
                 self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
             except ExecutionError as exc:
+                self._error(exc.status, str(exc))
+            except RecordStoreError as exc:
                 self._error(exc.status, str(exc))
             except WorkBuddyError as exc:
                 status = HTTPStatus.SERVICE_UNAVAILABLE if exc.code == "GATEWAY_NOT_CONFIGURED" else HTTPStatus.CONFLICT if exc.code in {"JOB_ALREADY_ACTIVE", "IDEMPOTENCY_KEY_CONFLICT"} else HTTPStatus.TOO_MANY_REQUESTS if exc.code == "RATE_LIMITED" else HTTPStatus.BAD_REQUEST

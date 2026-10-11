@@ -1,0 +1,14 @@
+{
+  "name": "tutupbuku-database",
+  "private": true,
+  "description": "Prisma schema and tooling for the TutupBuku Supabase database. The app itself is the Python backend and the frontend/ folder.",
+  "scripts": {
+    "db:validate": "prisma validate",
+    "db:push": "prisma db push --skip-generate",
+    "db:sql": "prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script",
+    "db:studio": "prisma studio"
+  },
+  "devDependencies": {
+    "prisma": "6.19.3"
+  }
+}
