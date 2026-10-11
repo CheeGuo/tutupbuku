@@ -4,7 +4,7 @@ import { useData } from '../state/store';
 import type { Claim, DocRecord, DocType } from '../types';
 import { CHART_OF_ACCOUNTS } from '../data/dummy';
 import { TYPE_CONFIG, chainOf, claimDoc, docAmount, docDate, docNumber, docParty, fieldDisplay, linkOf, poIdOf } from '../lib/docs';
-import { formatDate, formatMoney, formatTimestamp, humanStatus } from '../lib/format';
+import { decimalFromSen, formatDate, formatMoney, formatTimestamp, humanStatus } from '../lib/format';
 import { Disclosure, Empty, Segmented } from '../components/ui';
 
 type Tab = 'purchasing' | 'claims';
@@ -24,8 +24,12 @@ export function Documents() {
   const from = params.get('from') ?? '';
   const to = params.get('to') ?? '';
   const category = params.get('category') ?? '';
+  const q = params.get('q') ?? '';
   const selected = params.get(tab === 'claims' ? 'claim' : 'doc');
   const set = (patch: Record<string, string | null>) => { const next = new URLSearchParams(params); Object.entries(patch).forEach(([k, v]) => (v ? next.set(k, v) : next.delete(k))); setParams(next); };
+  const setQuery = (value: string) => { const next = new URLSearchParams(params); if (value) next.set('q', value); else next.delete('q'); setParams(next, { replace: true }); };   // typing must not fill the back-button history
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = (text: string) => terms.every(t => text.includes(t));
   const inRange = (date: string) => (!from || (!!date && date >= from)) && (!to || (!!date && date <= to));
   const rangeError = from && to && from > to ? 'Date from must be on or before Date to.' : '';
   const range = rangeError ? { from: '', to: '' } : { from, to };
@@ -34,10 +38,11 @@ export function Documents() {
   // Each purchase order with everything linked to it, newest first. Filters apply to the linked records themselves.
   const groups = useMemo(() => purchasing.filter(d => d.docType === 'purchase_order').map(po => ({ po, chain: chainOf(po.id, purchasing, data.links) }))
     .sort((a, b) => docDate(b.po).localeCompare(docDate(a.po))), [data.docs, data.links]);   // eslint-disable-line react-hooks/exhaustive-deps
-  const passes = (d: DocRecord) => !rangeError && inRange(docDate(d)) && (!category || d.docType === category);
+  const docText = (d: DocRecord) => [d.id, d.filename, TYPE_CONFIG[d.docType].label, d.status.replace('_', ' '), d.uploadedBy, ...d.fields.flatMap(f => [f.label, f.value, f.sen === undefined ? '' : `${decimalFromSen(f.sen)} ${formatMoney(f.sen)}`]), ...d.lines.map(l => l.description)].join(' ').toLowerCase();
+  const passes = (d: DocRecord) => !rangeError && inRange(docDate(d)) && (!category || d.docType === category) && matches(docText(d));
   const shownGroups = groups.map(g => ({ ...g, children: g.chain.filter(d => d.id !== g.po.id && passes(d)), poPasses: passes(g.po) })).filter(g => g.poPasses || g.children.length);
   const loose = purchasing.filter(d => d.docType !== 'purchase_order' && poIdOf(d, data.links) === null && passes(d));
-  const claimsShown = data.claims.filter(c => { const r = claimDoc(c, data.docs); return !rangeError && inRange(r ? docDate(r) : '') && (!category || c.categoryCode === category); });
+  const claimsShown = data.claims.filter(c => { const r = claimDoc(c, data.docs); return !rangeError && inRange(r ? docDate(r) : '') && (!category || c.categoryCode === category) && matches(`${c.id} ${c.employee} ${c.employeePurpose} ${c.standardizedDescription} ${c.categoryCode ?? ''} ${r ? docText(r) : ''}`.toLowerCase()); });
   const claimGroups = (['APPROVED', 'PENDING', 'REJECTED'] as const).map(k => ({ key: k, items: claimsShown.filter(c => claimKey(c) === k) }));
 
   const invoicesReady = purchasing.filter(d => d.docType === 'invoice' && d.status === 'VERIFIED' && inRange(docDate(d)) && !rangeError).length;
@@ -62,20 +67,20 @@ export function Documents() {
       </div>
     </header>
 
-    <div className="filterbar" role="search" aria-label="Filters">
+    <div className="filterbar" role="search" aria-label="Search and filters">
+      <label className="field field-search"><span>Search</span><input type="search" value={q} onChange={e => setQuery(e.target.value)} placeholder={tab === 'claims' ? 'Employee, merchant, receipt no., purpose…' : 'Document no., supplier, item, amount, PO…'} aria-label="Search documents" /></label>
       <label className="field"><span>Date from</span><input type="date" value={from} max={to || undefined} onChange={e => set({ from: e.target.value || null })} /></label>
       <label className="field"><span>Date to</span><input type="date" value={to} min={from || undefined} onChange={e => set({ to: e.target.value || null })} /></label>
       <label className="field"><span>Category</span><select value={category} onChange={e => set({ category: e.target.value || null })}>
         <option value="">All categories</option>
         {tab === 'purchasing' ? CATEGORIES.map(c => <option key={c} value={c}>{TYPE_CONFIG[c].label}</option>) : CHART_OF_ACCOUNTS.map(a => <option key={a.code} value={a.code}>{a.name}</option>)}
       </select></label>
-      {(from || to || category) && <button type="button" className="btn btn-ghost btn-sm" onClick={() => set({ from: null, to: null, category: null })}>Clear</button>}
+      {(from || to || category || q) && <button type="button" className="btn btn-ghost btn-sm" onClick={() => set({ from: null, to: null, category: null, q: null })}>Clear</button>}
       <p className="hint filter-note">Dates apply to each record’s own date and also set the range of the CSV downloads above.{rangeError && <span className="error-text" role="alert"> {rangeError}</span>}</p>
     </div>
 
     <div className="subhead"><Segmented<Tab> label="Record types" value={tab} onChange={v => setParams(v === 'claims' ? { tab: 'claims' } : {})}
-      options={[{ value: 'purchasing', label: 'Purchasing', count: groups.length + loose.length }, { value: 'claims', label: 'Claims', count: data.claims.length }]} />
-      <span className="tag">Sample data · saved in this browser</span></div>
+      options={[{ value: 'purchasing', label: 'Purchasing', count: groups.length + loose.length }, { value: 'claims', label: 'Claims', count: data.claims.length }]} /></div>
 
     <div className={`split ${hasDetail ? 'has-detail' : ''}`}>
       <div className="split-list">
@@ -151,7 +156,7 @@ function DocBlock({ doc, heading }: { doc: DocRecord; heading?: boolean }) {
     {doc.fields.length > 0 && <dl className="kv">{doc.fields.map(f => <div key={f.key}><dt>{f.label}</dt><dd>{fieldDisplay(f)}{f.confidence !== undefined && f.confidence < 0.7 && <span className="conf low">uncertain</span>}</dd></div>)}</dl>}
     {doc.lines.length > 0 && <div className="table-wrap"><table className="table"><thead><tr><th>Item</th><th className="num">Qty</th>{doc.docType !== 'delivery_order' && <><th className="num">Unit price</th><th className="num">Total</th></>}</tr></thead>
       <tbody>{doc.lines.map(l => <tr key={l.id}><td>{l.description}</td><td className="num">{l.quantity}</td>{doc.docType !== 'delivery_order' && <><td className="num">{l.unitSen === null ? '—' : formatMoney(l.unitSen)}</td><td className="num">{l.totalSen === null ? '—' : formatMoney(l.totalSen)}</td></>}</tr>)}</tbody></table></div>}
-    <p className="muted">{doc.filename} · v{doc.version} · uploaded {formatTimestamp(doc.uploadedAt)} by {doc.uploadedBy} · checksum <code>{doc.hash}</code></p>
+    <p className="muted">{doc.sourceUrl ? <a href={doc.sourceUrl} target="_blank" rel="noreferrer">{doc.filename} (open original PDF)</a> : doc.filename} · v{doc.version} · uploaded {formatTimestamp(doc.uploadedAt)} by {doc.uploadedBy} · checksum <code>{doc.hash}</code></p>
   </div>;
   if (heading) return <article className="detail"><header className="detail-head"><div><span className="eyebrow">{cfg.label}</span><h2>{docNumber(doc)}</h2></div></header>{!poIdOf(doc, links) && <p className="muted">Not linked to a purchase order. It is kept for review in Action Items.</p>}{body}</article>;
   return <details className={`chain-doc ${doc.status === 'REJECTED' ? 'rejected' : ''}`}><summary>{summary}</summary>{body}</details>;

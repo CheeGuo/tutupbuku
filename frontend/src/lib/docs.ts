@@ -70,3 +70,15 @@ export function claimDoc(claim: Claim, docs: DocRecord[]): DocRecord | undefined
 export function csvCell(value: string): string {
   return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
+
+/** Apply corrected unit prices to an invoice's lines and keep its tax and grand total in step (same tax rate on the new subtotal). */
+export function repriceInvoice(inv: DocRecord, prices: Record<string, number>): { lines: DocRecord['lines']; fields: Field[] } {
+  const lines = inv.lines.map(l => (prices[l.id] === undefined ? l : { ...l, unitSen: prices[l.id], totalSen: lineTotal(l.quantity, prices[l.id]) }));
+  const sumOf = (ls: DocRecord['lines']) => ls.reduce((a, l) => a + (l.totalSen ?? 0), 0);
+  const oldSum = sumOf(inv.lines); const newSum = sumOf(lines);
+  const oldTax = field(inv, 'tax')?.sen; const hasGrand = field(inv, 'grand_total')?.sen !== undefined;
+  const newTax = oldTax !== undefined && oldSum > 0 ? Math.round(newSum * (oldTax / oldSum)) : undefined;
+  const fields = newTax === undefined || !hasGrand ? inv.fields
+    : inv.fields.map(f => (f.key === 'tax' ? { ...f, sen: newTax } : f.key === 'grand_total' ? { ...f, sen: newSum + newTax } : f));
+  return { lines, fields };
+}

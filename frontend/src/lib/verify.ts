@@ -1,5 +1,5 @@
 import type { DocLink, DocRecord, Issue } from '../types';
-import { chainOf, docAmount, docNumber, docParty } from './docs';
+import { chainOf, docAmount, docNumber, docParty, docTax } from './docs';
 import { formatMoney } from './format';
 
 /* Deterministic checks (context §5: arithmetic, matching constraints and duplicates are code, not AI). */
@@ -48,11 +48,11 @@ export function checkInvoice(inv: DocRecord, docs: DocRecord[], links: DocLink[]
   if (dup) issues.push({ ruleCode: 'DUPLICATE_INVOICE', typeLabel: 'Possible duplicate', severity: 'WARNING', docIds: [inv.id, dup.id], title: `${docNumber(inv)} may already be on file`,
     detected: `An invoice with the same number from ${supplier} already exists.`, why: 'Duplicate invoice number per supplier. Posting both would double-count the amount.',
     suggested: ['Keep one record and mark the other as the duplicate.'], evidence: [{ label: 'Invoice number', expected: docNumber(dup), found: docNumber(inv) }] });
-  const lineSum = inv.lines.reduce((s, l) => s + (l.totalSen ?? 0), 0);
+  const lineSum = inv.lines.reduce((s, l) => s + (l.totalSen ?? 0), 0) + (docTax(inv) ?? 0);   // grand total includes the printed Sales Tax
   const grand = docAmount(inv);
   if (grand !== null && Math.abs(lineSum - grand) > 1) issues.push({ ruleCode: 'TOTAL_MISMATCH', typeLabel: 'Amount mismatch', severity: 'WARNING', docIds: [inv.id], title: `${docNumber(inv)} lines do not add up to the total`,
     detected: 'The sum of the line totals differs from the grand total.', why: 'Line totals must add up to the grand total within rounding tolerance.', suggested: ['Compare with the source file and correct the value.'],
-    evidence: [{ label: 'Sum of lines', expected: formatMoney(lineSum), found: formatMoney(grand) }] });
+    evidence: [{ label: 'Sum of lines + tax', expected: formatMoney(lineSum), found: formatMoney(grand) }] });
 
   const comparison: Comparison[] = [];
   if (po) {
@@ -72,10 +72,21 @@ export function checkInvoice(inv: DocRecord, docs: DocRecord[], links: DocLink[]
       if (got !== null && line.quantity > got) flags.push('More than delivered');
       comparison.push({ item: line.description, poQty: pl?.quantity ?? null, poUnit: pl?.unitSen ?? null, invQty: line.quantity, invUnit: line.unitSen, delivered: got, flags });
     }
-    if (comparison.some(c => c.flags.includes('Price differs'))) issues.push({ ruleCode: 'PRICE_VARIANCE', typeLabel: 'Unit-price mismatch', severity: 'HIGH', docIds: [inv.id, po.id],
-      title: `Invoice unit price differs from ${docNumber(po)}`, detected: `${docNumber(inv)} bills at a different unit price than ${docNumber(po)}.`,
-      why: 'Unit price on an invoice line differs from the approved PO line, and no variance tolerance is configured.',
-      suggested: ['Ask the supplier whether a price change was agreed.', 'If the invoice was misread, correct the value here.'], evidence: [] });
+    const priced = comparison.filter(c => c.flags.includes('Price differs'));
+    if (priced.length) {
+      const one = priced.length === 1 ? priced[0] : null;
+      const poTotal = docAmount(po);
+      const wholePo = inv.lines.length === po.lines.length && comparison.every(c => c.poQty === c.invQty);
+      issues.push({ ruleCode: 'PRICE_VARIANCE', typeLabel: 'Unit-price mismatch', severity: 'HIGH', docIds: [inv.id, po.id],
+        title: one ? `Invoice unit price is ${formatMoney(one.invUnit!)}, PO says ${formatMoney(one.poUnit!)}` : `Invoice unit prices differ from ${docNumber(po)}`,
+        detected: one ? `${docNumber(inv)} bills ${one.item} at a higher or different unit price than ${docNumber(po)}.` : `${docNumber(inv)} bills ${priced.length} items at a different unit price than ${docNumber(po)}.`,
+        why: 'Unit price on an invoice line differs from the approved PO line, and no variance tolerance is configured. The PO says no variation is accepted without written approval.',
+        suggested: ['Ask the supplier whether a price change was agreed, and request a credit note or a corrected invoice.', 'If the invoice was misread, correct the value here.', 'Do not approve the invoice for export until this is settled.'],
+        evidence: [
+          ...priced.map(c => ({ label: `${c.item}: unit price`, expected: `${formatMoney(c.poUnit!)} (PO)`, found: `${formatMoney(c.invUnit!)} (invoice)` })),
+          ...(wholePo && poTotal !== null && grand !== null && poTotal !== grand ? [{ label: 'Invoice grand total', expected: `${formatMoney(poTotal)} (PO)`, found: formatMoney(grand), note: `${formatMoney(Math.abs(grand - poTotal))} ${grand > poTotal ? 'more' : 'less'} than the PO, including tax` }] : []),
+        ] });
+    }
     const qty = comparison.filter(c => c.flags.includes('More than ordered') || c.flags.includes('More than delivered') || c.flags.includes('Not on PO'));
     if (qty.length) issues.push({ ruleCode: 'QUANTITY_MISMATCH', typeLabel: 'Quantity mismatch', severity: 'WARNING', docIds: [inv.id, po.id],
       title: `Invoice quantity exceeds what was ordered or delivered`, detected: qty.map(q => `${q.item}: ${q.flags.join(', ').toLowerCase()}`).join('; '),

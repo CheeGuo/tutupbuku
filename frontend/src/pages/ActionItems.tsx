@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useData } from '../state/store';
+import { sha256 } from '../lib/agent';
 import { useExecution } from '../lib/execution';
 import type { Claim, DocRecord, EvidenceRow, Issue, IssueStatus, Severity } from '../types';
 import { CHART_OF_ACCOUNTS } from '../data/dummy';
@@ -128,7 +129,8 @@ function IssueDetail({ issue }: { issue: Item }) {
 
 /** Decisions depend on the type of issue; every one writes through the shared store and is audited. */
 function Resolution({ issue, records, claim }: { issue: Issue; records: DocRecord[]; claim?: Claim }) {
-  const { docs, links, setIssueStatus, confirmField, correctPrice, linkToPo, resolveDuplicate } = useData();
+  const { docs, links, setIssueStatus, confirmField, correctPrice, linkToPo, resolveDuplicate, replaceInvoice } = useData();
+  const [reading, setReading] = useState<'idle' | 'reading' | 'checking'>('idle');
   const [note, setNote] = useState('');
   const [mode, setMode] = useState<'resolve' | 'dismiss' | null>(null);
   const [prices, setPrices] = useState<Record<string, string>>({});
@@ -153,8 +155,25 @@ function Resolution({ issue, records, claim }: { issue: Issue; records: DocRecor
       const inv = docs.find(d => d.id === issue.docIds[0]); const po = inv && docs.find(d => d.id === poIdOf(inv, links));
       if (!inv || !po) break;
       const diff = inv.lines.filter(l => { const p = po.lines.find(x => x.description === l.description); return p && p.unitSen !== null && l.unitSen !== null && p.unitSen !== l.unitSen; });
+      const onCorrected = async (file: File | undefined) => {
+        if (!file) return;
+        setMsg(''); setReading('reading');
+        const hash = await sha256(file);
+        await new Promise(r => window.setTimeout(r, 2800));   // reading the file
+        setReading('checking');
+        await new Promise(r => window.setTimeout(r, 2200));   // re-checking against the PO
+        if (replaceInvoice(issue.id, inv.id, { name: file.name, hash }) === 'failed') { setMsg('Could not replace the invoice.'); setReading('idle'); }
+      };
       return <section className="block resolution"><h3>Decide</h3>
-        {diff.length > 0 && <><p className="muted">If the invoice was read wrongly, correct the unit price. The check re-runs against the PO immediately.</p>
+        {diff.length > 0 && <div className="compare-card">
+          <strong>Did the supplier send a corrected invoice or credit note?</strong>
+          <p className="muted">Upload it here. It replaces {docNumber(inv)}, which stays in Documents as superseded, and is checked against {docNumber(po)} straight away.</p>
+          <p className="sample-note">No OCR is connected in this build: the corrected invoice is read as the same items billed at the PO prices, and its number is taken from the file name.</p>
+          <div className="actions"><label className={`btn btn-primary${reading !== 'idle' ? ' disabled' : ''}`} aria-disabled={reading !== 'idle'}>
+            {reading === 'reading' ? 'Reading the file…' : reading === 'checking' ? 'Checking against the PO…' : 'Upload corrected invoice'}
+            <input type="file" accept="application/pdf,image/*" hidden disabled={reading !== 'idle'} onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; void onCorrected(f); }} /></label></div>
+        </div>}
+        {diff.length > 0 && <><p className="muted">Or, if the invoice was read wrongly, correct the unit price. The check re-runs against the PO immediately.</p>
           <div className="side-by-side">{diff.map(l => { const p = po.lines.find(x => x.description === l.description)!; return <div key={l.id} className="compare-card">
             <strong>{l.description}</strong><div className="cmp"><span>PO {docNumber(po)}</span><b>{formatMoney(p.unitSen!)}</b></div>
             <label className="field"><span>Invoice {docNumber(inv)} unit price (RM)</span><input inputMode="decimal" value={prices[l.id] ?? (l.unitSen! / 100).toFixed(2)} onChange={e => setPrices({ ...prices, [l.id]: e.target.value })} /></label></div>; })}</div>

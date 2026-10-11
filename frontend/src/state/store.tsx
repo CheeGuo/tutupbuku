@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { AuditEntry, Claim, DocLink, DocRecord, Issue, IssueStatus, Toast } from '../types';
 import { REVIEWER, SEED_AUDIT, SEED_CLAIMS, SEED_DOCS, SEED_ISSUES, SEED_LINKS } from '../data/dummy';
-import { csvCell, docAmount, docDate, docNumber, docParty, docTax, field, lineTotal, poIdOf } from '../lib/docs';
+import { csvCell, docAmount, docDate, docNumber, docParty, docTax, field, lineTotal, poIdOf, repriceInvoice } from '../lib/docs';
 import { decimalFromSen } from '../lib/format';
 import { checkInvoice } from '../lib/verify';
 
@@ -9,7 +9,7 @@ import { checkInvoice } from '../lib/verify';
    The Python service has no purchasing/claims storage, so this state is persisted in the browser (localStorage). */
 
 interface State { docs: DocRecord[]; links: DocLink[]; claims: Claim[]; issues: Issue[]; audit: AuditEntry[] }
-const KEY = 'tutupbuku.records.v2';
+const KEY = 'tutupbuku.records.v4';
 const SEED: State = { docs: SEED_DOCS, links: SEED_LINKS, claims: SEED_CLAIMS, issues: SEED_ISSUES, audit: SEED_AUDIT };
 
 function load(): State {
@@ -34,10 +34,14 @@ interface DataApi extends State {
   latest: React.MutableRefObject<State>;
   openIssuesFor: (docId: string) => Issue[];
   commit: (bundle: Bundle, actor: string) => void;
+  /** Demo re-runs: drop an earlier copy of an invoice (and its links and issues) before the same file is processed again. */
+  discardInvoice: (invoiceNo: string) => void;
   setIssueStatus: (issueId: string, status: IssueStatus, note?: string) => void;
   confirmField: (issueId: string, docId: string, key: string, value: string) => void;
   correctPrice: (issueId: string, invoiceId: string, prices: Record<string, number>) => 'cleared' | 'still-differs';
   linkToPo: (issueId: string, docId: string, poId: string) => void;
+  /** The supplier sent a corrected invoice: it supersedes the flagged one (kept as rejected), is re-checked against the PO, and the issue is resolved. */
+  replaceInvoice: (issueId: string, oldInvoiceId: string, file: { name: string; hash: string }) => 'replaced' | 'failed';
   resolveDuplicate: (issueId: string, keepId: string) => void;
   updateClaim: (claimId: string, patch: Partial<Pick<Claim, 'categoryCode' | 'standardizedDescription'>>) => void;
   decideClaim: (claimId: string, status: 'APPROVED' | 'REJECTED', reason?: string) => void;
@@ -95,6 +99,14 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       }));
     },
 
+    discardInvoice(invoiceNo) {
+      setState(s => {
+        const gone = new Set(s.docs.filter(d => d.docType === 'invoice' && docNumber(d) === invoiceNo).map(d => d.id));
+        if (!gone.size) return s;
+        return { ...s, docs: s.docs.filter(d => !gone.has(d.id)), links: s.links.filter(l => !gone.has(l.sourceId) && !gone.has(l.targetId)), issues: s.issues.filter(i => !i.docIds.some(id => gone.has(id))) };
+      });
+    },
+
     setIssueStatus(issueId, status, note = '') {
       setState(s => autoVerify(closeIssue(s, issueId, status, note.trim())));
       toast(`${issueId} ${status.replace('_', ' ').toLowerCase()}.`);
@@ -117,10 +129,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const poId = inv ? poIdOf(inv, latest.current.links) : null;
       const po = poId ? latest.current.docs.find(d => d.id === poId) : undefined;
       if (!inv || !po) return 'still-differs';
-      const lines = inv.lines.map(l => prices[l.id] === undefined ? l : { ...l, unitSen: prices[l.id], totalSen: lineTotal(l.quantity, prices[l.id]) });
+      const { lines, fields: fixedFields } = repriceInvoice(inv, prices);
       const differs = lines.some(l => { const p = po.lines.find(x => x.description === l.description); return p && p.unitSen !== null && l.unitSen !== null && p.unitSen !== l.unitSen; });
       setState(s => {
-        const next = { ...s, docs: s.docs.map(d => d.id === invoiceId ? { ...d, lines, version: d.version + 1 } : d),
+        const next = { ...s, docs: s.docs.map(d => d.id === invoiceId ? { ...d, lines, fields: fixedFields, version: d.version + 1 } : d),
           audit: [entry(invoiceId, 'Corrected extracted unit price(s)', REVIEWER, undefined, 'Re-check ' + (differs ? 'still differs' : 'passed')), ...s.audit] };
         return differs ? next : autoVerify(closeIssue(next, issueId, 'RESOLVED', 'Unit price corrected; re-check against the PO passed.'));
       });
@@ -148,6 +160,43 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         return autoVerify(next);
       });
       toast('Link confirmed and checks re-run.');
+    },
+
+    replaceInvoice(issueId, oldInvoiceId, file) {
+      const cur = latest.current;
+      const old = cur.docs.find(d => d.id === oldInvoiceId && d.docType === 'invoice');
+      const poId = old ? poIdOf(old, cur.links) : null;
+      const po = poId ? cur.docs.find(d => d.id === poId) : undefined;
+      if (!old || !po) return 'failed';
+      // No OCR is connected: the corrected invoice is read as the old one billed at the PO's unit prices.
+      const prices: Record<string, number> = {};
+      for (const l of old.lines) { const p = po.lines.find(x => x.description === l.description); if (p && p.unitSen !== null) prices[l.id] = p.unitSen; }
+      const repriced = repriceInvoice(old, prices);
+      const oldNo = docNumber(old);
+      const found = /([A-Z]{2,4}[-_/]INV[-_/]\d{2}[-_/]\d{3,5}[A-Z]?)/i.exec(file.name);
+      let newNo = found ? found[1].replace(/_/g, '-') : '';
+      if (!newNo || newNo === oldNo) newNo = `${oldNo}-R`;
+      const [newId] = allocIds('DOC', cur.docs.map(d => d.id), 1);
+      const today = new Date().toISOString().slice(0, 10);
+      const fields = repriced.fields.map(f => f.key === 'invoice_no' ? { ...f, value: newNo, confidence: 1 } : f.key === 'date' ? { ...f, value: today, confidence: 1 } : f);
+      const fresh: DocRecord = { ...old, id: newId, filename: file.name, hash: file.hash, version: 1, lines: repriced.lines, fields, status: 'EXTRACTED', note: `Corrected invoice replacing ${oldNo}.`,
+        uploadedAt: new Date().toISOString(), uploadedBy: REVIEWER, sourceUrl: undefined };
+      setState(s => {
+        let next: State = { ...s,
+          docs: [fresh, ...s.docs.map(d => d.id === oldInvoiceId ? { ...d, status: 'REJECTED' as const, note: `Superseded by corrected invoice ${newNo} (${newId}).` } : d)],
+          links: [{ id: `LNK-${newId}-${po.id}`, sourceId: newId, targetId: po.id, relationship: 'for_po', confidence: 1, confirmedBy: REVIEWER }, ...s.links],
+          audit: [entry(oldInvoiceId, `Superseded by corrected invoice ${newNo}`, REVIEWER, old.status, 'REJECTED'), entry(newId, `Corrected invoice ${newNo} received for ${oldNo}`, REVIEWER), ...s.audit] };
+        next = closeIssue(next, issueId, 'RESOLVED', `Replaced by corrected invoice ${newNo}.`);
+        const recheck = checkInvoice(fresh, next.docs, next.links, docNumber(po)).issues
+          .filter(d => !['MISSING_PO', 'AMBIGUOUS_PO_MATCH', 'DUPLICATE_INVOICE'].includes(d.ruleCode));
+        if (recheck.length) {
+          const ids = allocIds('ISS', next.issues.map(i => i.id), recheck.length);
+          next = { ...next, issues: [...recheck.map((d, n): Issue => ({ ...d, id: ids[n], status: 'OPEN', createdAt: new Date().toISOString() })), ...next.issues], docs: next.docs.map(d => d.id === newId ? { ...d, status: 'NEEDS_REVIEW' as const } : d) };
+        }
+        return autoVerify(next);
+      });
+      toast(`Corrected invoice ${newNo} saved; ${oldNo} is marked as superseded.`);
+      return 'replaced';
     },
 
     resolveDuplicate(issueId, keepId) {

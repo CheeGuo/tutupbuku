@@ -8,7 +8,6 @@ function CardView({ card }: { card: Card }) {
   switch (card.type) {
     case 'extract': return <section className="card-msg">
       <h3>{card.title}</h3>
-      {card.sample && <p className="sample-note">Prepared sample extraction: no OCR is connected in this build, so these values are not read from your file. The checks that follow are computed from them.</p>}
       <dl className="kv">{card.fields.map(f => <div key={f.label}><dt>{f.label}</dt><dd>{f.value}{f.low && <span className="conf low">uncertain</span>}</dd></div>)}</dl>
       {card.lines.length > 0 && <Disclosure title="Line items" meta={card.lines.length}>
         <div className="table-wrap"><table className="table"><thead><tr><th>Item</th><th className="num">Qty</th><th className="num">Unit</th><th className="num">Total</th></tr></thead>
@@ -45,6 +44,16 @@ function CardView({ card }: { card: Card }) {
       <ul className="bullets">{card.lines.map(l => <li key={l}>{l}</li>)}</ul>
       <div className="actions"><Link className="btn btn-sm" to="/documents">View in Documents</Link><Link className="btn btn-sm" to="/issues">Open Action Items</Link></div>
     </section>;
+    case 'alert': return <section className="card-msg alert" role="alert">
+      <h3>{card.title}</h3>
+      <ul className="bullets">{card.lines.map(l => <li key={l}>{l}</li>)}</ul>
+    </section>;
+    case 'fix': return <section className="card-msg saved">
+      <h3>{card.title}</h3>
+      {card.rows.length > 0 && <div className="table-wrap"><table className="table"><thead><tr><th>Item</th><th className="num">Was</th><th className="num">Now</th></tr></thead>
+        <tbody>{card.rows.map(r => <tr key={r.item}><td>{r.item}</td><td className="num">{r.from}</td><td className="num">{r.to}</td></tr>)}</tbody></table></div>}
+      <ul className="bullets">{card.lines.map(l => <li key={l}>{l}</li>)}</ul>
+    </section>;
   }
 }
 
@@ -53,7 +62,7 @@ export function ChatMessage({ msg, onChoose }: { msg: Msg; onChoose: (msgId: str
   if (msg.kind === 'agent') return <div className="msg msg-agent"><span className="avatar" aria-hidden="true" /><div className="bubble"><p>{msg.text}</p>
     {msg.to && <Link to={msg.to}>{msg.action} →</Link>}
     {msg.hash && <a href={`#${msg.hash}`} onClick={e => { e.preventDefault(); document.getElementById(msg.hash!)?.scrollIntoView({ block: 'center' }); }}>{msg.action} →</a>}</div></div>;
-  if (msg.kind === 'quick') return <div className="msg msg-agent"><span className="avatar" aria-hidden="true" /><div className="bubble"><p>What are you sending?</p>
+  if (msg.kind === 'quick') return <div className="msg msg-agent"><span className="avatar" aria-hidden="true" /><div className="bubble"><p>{msg.prompt ?? 'What are you sending?'}</p>
     <div className="hero-actions left">{msg.options.map(o => <button key={o.id} type="button" className="chip" disabled={msg.used} onClick={() => onChoose(msg.id, o.id)}>{o.label}</button>)}</div></div></div>;
   if (msg.kind === 'steps') return <div className="msg msg-agent"><span className="avatar" aria-hidden="true" /><ol className="steps-card" aria-live="polite">{msg.steps.map(s => <li key={s.label} className={s.state}><span className="step-mark">{s.state === 'done' ? '✓' : s.state === 'running' ? '' : ''}</span>{s.label}</li>)}</ol></div>;
   return <div className="msg msg-agent"><span className="avatar" aria-hidden="true" /><div className="bubble wide"><CardView card={msg.card} /></div></div>;

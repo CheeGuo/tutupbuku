@@ -70,6 +70,8 @@ code, .mono, .mono-h { font-family: var(--mono); font-size: .86em; }
 .btn-danger:hover:not(:disabled) { background: var(--red); border-color: var(--red-ink); }
 .btn-ghost { border-color: transparent; background: transparent; color: var(--blue-ink); }
 .btn-sm { min-height: 34px; padding: 5px 13px; font-size: 13px; }
+label.btn { cursor: pointer; }
+label.btn.disabled { color: var(--ink-3); background: var(--sunken); border-color: var(--line); cursor: progress; }
 .btn:disabled { color: var(--ink-3); background: var(--sunken); border-color: var(--line); cursor: not-allowed; }
 .icon-btn { width: 36px; height: 36px; border: 0; border-radius: 50%; background: transparent; color: var(--ink-2); }
 .icon-btn:hover { background: var(--sunken); }
@@ -466,6 +468,8 @@ code, .mono, .mono-h { font-family: var(--mono); font-size: .86em; }
 .card-msg h3 { font-size: 15px; font-weight: 600; }
 .card-msg.saved { background: var(--mint); border-color: transparent; color: var(--mint-ink); }
 .card-msg.saved h3 { color: var(--ink); }
+.card-msg.alert { background: var(--red); border-color: transparent; color: var(--red-ink); }
+.card-msg.alert h3 { color: var(--red-ink); }
 .sample-note { font-size: 12.5px; color: var(--lime-ink); background: var(--lime); padding: 8px 12px; border-radius: 10px; }
 .table small.flag { color: var(--red-ink); font-weight: 600; }
 .verdict { font-weight: 700; font-size: 13px; }
@@ -574,3 +578,5 @@ code, .mono, .mono-h { font-family: var(--mono); font-size: .86em; }
   .live.is-idle .hero > p { font-size: 18px; max-width: 46ch; }
 }
 @media (max-width: 980px) { .live.is-idle .hero { text-align: left; justify-items: stretch; } .live.is-idle .hero > p { max-width: none; } .live.is-idle .orbit { height: clamp(240px, 36vh, 340px); } }
+
+.filterbar .field-search { flex: 1 1 280px; min-width: 220px; }

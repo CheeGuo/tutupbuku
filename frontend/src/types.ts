@@ -42,6 +42,8 @@ export interface DocRecord {
   uploadedAt: string;
   uploadedBy: string;
   note?: string;
+  /** Where the original PDF can be re-opened (served from frontend/public). Absent for files only held as extracted values. */
+  sourceUrl?: string;
 }
 
 export type LinkState = 'confirmed' | 'proposed';

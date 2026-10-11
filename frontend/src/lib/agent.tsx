@@ -1,8 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { Claim, DocLink, DocRecord, DocType, Field, Issue, LineItem, Severity } from '../types';
-import { CHART_OF_ACCOUNTS } from '../data/dummy';
+import { CHART_OF_ACCOUNTS, DEMO_INVOICE_1019 } from '../data/dummy';
 import { allocIds, useData } from '../state/store';
-import { TYPE_CONFIG, chainOf, docAmount, docDate, docNumber, docParty, fieldDisplay, lineTotal } from './docs';
+import { TYPE_CONFIG, chainOf, docAmount, docDate, docNumber, docParty, fieldDisplay, lineTotal, repriceInvoice } from './docs';
 import { formatDate, formatMoney } from './format';
 import { checkInvoice, type Comparison, type IssueDraft } from './verify';
 
@@ -29,12 +29,17 @@ export type Card =
   | { type: 'compare'; po: string; rows: Comparison[] }
   | { type: 'claim'; purpose: string; plausibility: 'PLAUSIBLE' | 'NEEDS_REVIEW'; findings: string[]; category: string; confidence: number; reasoning: string; description: string }
   | { type: 'findings'; items: { severity: Severity; title: string; typeLabel: string }[]; human: boolean }
-  | { type: 'saved'; lines: string[] };
+  | { type: 'saved'; lines: string[] }
+  | { type: 'alert'; title: string; lines: string[] }
+  | { type: 'fix'; title: string; rows: { item: string; from: string; to: string }[]; lines: string[] };
+
+/** The record the agent is holding back until the user picks Fix now or Review later. Kept on the message so it survives a reload. */
+export interface FixContext { stepsId: string; invoiceNo: string; poNo: string; varianceId: string; prices: Record<string, number>; bundle: { doc: DocRecord; links: DocLink[]; issues: Issue[] } }
 
 export type Msg =
   | { id: string; kind: 'user'; text: string; files: string[] }
   | { id: string; kind: 'agent'; text: string; to?: string; action?: string; hash?: string }
-  | { id: string; kind: 'quick'; options: { id: string; label: string }[]; used?: boolean }
+  | { id: string; kind: 'quick'; options: { id: string; label: string }[]; used?: boolean; prompt?: string; ctx?: FixContext }
   | { id: string; kind: 'steps'; steps: { label: string; state: 'done' | 'running' | 'queued' }[] }
   | { id: string; kind: 'card'; card: Card };
 
@@ -69,7 +74,7 @@ const Ctx = createContext<AgentApi | null>(null);
 const sleep = (ms: number) => new Promise(r => window.setTimeout(r, ms));
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-async function sha256(file: File) {
+export async function sha256(file: File) {
   try { return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer()))).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16); }
   catch { return `unhashed-${file.size}`; }
 }
@@ -83,24 +88,26 @@ const li = (id: string, description: string, quantity: number, unitSen: number |
 interface Sample { fields: Field[]; lines: LineItem[]; poRef: string | null }
 function purchasingSample(type: DocType, intent: Intent | null): Sample {
   if (type === 'invoice') {
-    if (intent === 'match') return { poRef: 'PO-2026-0419', lines: [li('l1', 'Packing tape 48mm', 200, 600)],
-      fields: [t('invoice_no', 'Invoice number', 'INV-BP-21044'), d('date', 'Date', '2026-10-10'), t('supplier', 'Supplier', 'Borneo Packaging Sdn Bhd'), d('due_date', 'Due date', '2026-11-09'), t('payment_terms', 'Payment term', 'Net 30'), m('grand_total', 'Grand total', 120000)] };
-    if (intent === 'compare') return { poRef: 'PO-2026-0412', lines: [li('l1', 'Hydraulic hose assembly', 40, 11000), li('l2', 'Pressure gauge 0–10 bar', 10, 8500)],
-      fields: [t('invoice_no', 'Invoice number', 'INV-77188'), d('date', 'Date', '2026-10-10'), t('supplier', 'Supplier', 'Teknik Mesra Sdn Bhd'), d('due_date', 'Due date', '2026-11-09'), t('payment_terms', 'Payment term', 'Net 30'), m('grand_total', 'Grand total', 529000)] };
+    if (intent === 'match') return { poRef: 'SFSB-PO-2026-0101', lines: [li('l1', 'Ballpoint Pen, Blue (box of 50)', 5, 3200)],
+      fields: [t('invoice_no', 'Invoice number', 'KOS/INV/26/0412'), d('date', 'Date', '2026-10-10'), t('supplier', 'Supplier', 'Kenyalang Office Supplies Sdn Bhd'), d('due_date', 'Due date', '2026-11-09'), t('payment_terms', 'Payment term', '30 Days'), m('grand_total', 'Grand total', 16000)] };
+    if (intent === 'compare') return { poRef: 'SFSB-PO-2026-0087', lines: [li('l1', "Mild Steel Plate 6mm x 4' x 8' (S275JR)", 20, 54000), li('l2', 'Equal Angle Bar 50 x 50 x 5mm x 6m', 40, 6850)],
+      fields: [t('invoice_no', 'Invoice number', 'BST-INV-26-1031'), d('date', 'Date', '2026-10-10'), t('supplier', 'Supplier', 'Borneo Steel Trading Sdn Bhd'), d('due_date', 'Due date', '2026-11-09'), t('payment_terms', 'Payment term', '30 Days'), m('grand_total', 'Grand total', 1354000)] };
     return { poRef: null, lines: [li('l1', 'Desk lamp, LED', 4, 32000)],
-      fields: [t('invoice_no', 'Invoice number', 'INV-SOH-5530'), d('date', 'Date', '2026-10-09', 0.6), t('supplier', 'Supplier', 'Sarawak Office Hub'), d('due_date', 'Due date', '2026-11-08'), t('payment_terms', 'Payment term', 'Net 30'), m('grand_total', 'Grand total', 128000)] };
+      fields: [t('invoice_no', 'Invoice number', 'INV-SOH-5530'), d('date', 'Date', '2026-10-09', 0.6), t('supplier', 'Supplier', 'Sarawak Office Hub'), d('due_date', 'Due date', '2026-11-08'), t('payment_terms', 'Payment term', '30 Days'), m('grand_total', 'Grand total', 128000)] };
   }
-  if (type === 'delivery_order') return { poRef: 'PO-2026-0419', lines: [li('l1', 'Packing tape 48mm', 200, null)],
-    fields: [t('do_no', 'DO number', 'DO-3402'), d('date', 'Date', '2026-10-08'), t('supplier', 'Supplier', 'Borneo Packaging Sdn Bhd'), t('delivery_status', 'Delivery status', 'Delivered')] };
-  if (type === 'payment_advice') return { poRef: 'PO-2026-0419', lines: [],
-    fields: [t('advice_no', 'Payment advice number', 'PA-0110'), d('date', 'Date', '2026-10-10'), t('supplier', 'Supplier', 'Borneo Packaging Sdn Bhd'), m('amount', 'Amount', 120000), t('payment_reference', 'Payment reference', 'PO-2026-0419')] };
-  if (type === 'payment_receipt') return { poRef: 'PO-2026-0419', lines: [],
-    fields: [t('receipt_no', 'Receipt number', 'PR-0044'), d('date', 'Date', '2026-10-10'), t('supplier', 'Supplier', 'Borneo Packaging Sdn Bhd'), m('amount', 'Amount', 120000)] };
-  if (type === 'quotation') return { poRef: 'PO-2026-0419', lines: [li('l1', 'Packing tape 48mm', 200, 600)],
-    fields: [t('quotation_no', 'Quotation number', 'QT-9002'), d('date', 'Date', '2026-09-28'), t('supplier', 'Supplier', 'Borneo Packaging Sdn Bhd'), m('grand_total', 'Grand total', 120000)] };
+  if (type === 'delivery_order') return { poRef: 'SFSB-PO-2026-0101', lines: [li('l1', 'Ballpoint Pen, Blue (box of 50)', 5, null)],
+    fields: [t('do_no', 'DO number', 'KOS/DO/26/0415'), d('date', 'Date', '2026-10-08'), t('supplier', 'Supplier', 'Kenyalang Office Supplies Sdn Bhd'), t('delivery_status', 'Delivery status', 'Delivered in full')] };
+  if (type === 'payment_advice') return { poRef: 'SFSB-PO-2026-0101', lines: [],
+    fields: [t('advice_no', 'Payment advice number', 'SFSB-PA-2026-0080'), d('date', 'Date', '2026-10-10'), t('supplier', 'Supplier', 'Kenyalang Office Supplies Sdn Bhd'), m('amount', 'Amount', 16000), t('payment_reference', 'Payment reference', 'SFSB-PO-2026-0101')] };
+  if (type === 'payment_receipt') return { poRef: 'SFSB-PO-2026-0101', lines: [],
+    fields: [t('receipt_no', 'Receipt number', 'KOS/R/26/0302'), d('date', 'Date', '2026-10-10'), t('supplier', 'Supplier', 'Kenyalang Office Supplies Sdn Bhd'), m('amount', 'Amount', 16000)] };
+  if (type === 'quotation') return { poRef: 'SFSB-PO-2026-0101', lines: [li('l1', 'Ballpoint Pen, Blue (box of 50)', 5, 3200)],
+    fields: [t('quotation_no', 'Quotation number', 'KOS/Q/26/0240'), d('date', 'Date', '2026-09-28'), t('supplier', 'Supplier', 'Kenyalang Office Supplies Sdn Bhd'), m('grand_total', 'Grand total', 16000)] };
   return { poRef: null, lines: [li('l1', 'Desk lamp, LED', 4, 32000)],
-    fields: [t('po_no', 'PO number', 'PO-2026-0431'), d('date', 'Date', '2026-10-09'), t('supplier', 'Supplier', 'Sarawak Office Hub'), m('grand_total', 'Grand total', 128000)] };
+    fields: [t('po_no', 'PO number', 'SFSB-PO-2026-0131'), d('date', 'Date', '2026-10-09'), t('supplier', 'Supplier', 'Sarawak Office Hub'), m('grand_total', 'Grand total', 128000)] };
 }
+/** A file whose name says it is a supplier document is treated as purchasing without asking. */
+const looksPurchasing = (name: string) => /invoice|quotation|purchase[ _-]?order|delivery[ _-]?order|payment[ _-]?advice|\b(bst|kos|sfsb)[-_/]|\binv[-_]|\bpo[-_]|\bdo[-_]/i.test(name);
 function docTypeFor(name: string): DocType {
   const n = name.toLowerCase();
   if (/quot|\bqt\b|qt-/.test(n)) return 'quotation';
@@ -180,6 +187,8 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   const [stages, setStages] = useState<StageState[]>(DEMO_STAGES.map(() => 'queued'));
   const [busy, setBusy] = useState(false);
   const [stamp, setStamp] = useState(0);
+  const messagesRef = useRef<Msg[]>(messages);
+  messagesRef.current = messages;
   const flow = useRef<Flow>({ intent: null, stage: 'idle' });
   const pendingFile = useRef<File | null>(null);
   const add = useCallback((msg: Msg) => setMessages(items => [...items, msg]), []);
@@ -226,10 +235,14 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     const stepsId = uid();
     const steps = (done: number) => ({ id: stepsId, kind: 'steps' as const, steps: labels.map((label, i) => ({ label, state: i < done ? 'done' as const : i === done ? 'running' as const : 'queued' as const })) });
     add(steps(0)); const update = (done: number) => setMessages(items => items.map(x => x.id === stepsId ? steps(done) : x));
-    const advance = async (i: number) => { setStage(i, 'completed'); if (i < 4) setStage(i + 1, 'running'); update(i + 1); await sleep(650); };
+    // advance(i) finishes step i and then lets step i+1 "work" for a realistic while before its result is shown.
+    const STEP_MS = [0, 3600, 2800, 3200, 1800];
+    const advance = async (i: number) => { setStage(i, 'completed'); if (i < 4) setStage(i + 1, 'running'); update(i + 1); await sleep(i < 4 ? Math.round(STEP_MS[i + 1] * (0.85 + Math.random() * 0.3)) : 700); };
     try {
       setStage(0, 'running'); touch();
-      const hash = await sha256(file); await sleep(500); await advance(0);
+      if (!claims && DEMO_INVOICE_1019.fileMatch.test(file.name)) data.discardInvoice('BST-INV-26-1019');   // re-running the demo must not trip the duplicate check
+      await sleep(900);
+      const hash = await sha256(file); await sleep(1400); await advance(0);
       const { docs, links, claims: allClaims, issues } = data.latest.current;
       const draftIssues: { draft: IssueDraft; docIds?: string[] }[] = [];
       const newDocIds = allocIds('DOC', docs.map(x => x.id), 1);
@@ -264,8 +277,9 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         say('Done. I did not approve anything on your behalf.');
       } else {
         const type = docTypeFor(file.name);
-        const sample = purchasingSample(type, intent);
-        const doc: DocRecord = { id: newDocIds[0], docType: type, flow: 'purchasing', status: 'EXTRACTED', fields: sample.fields, lines: sample.lines, ...base };
+        const known = type === 'invoice' && DEMO_INVOICE_1019.fileMatch.test(file.name) ? DEMO_INVOICE_1019 : null;
+        const sample: Sample = known ?? purchasingSample(type, intent);
+        const doc: DocRecord = { id: newDocIds[0], docType: type, flow: 'purchasing', status: 'EXTRACTED', fields: sample.fields, lines: sample.lines, ...base, ...(known ? { sourceUrl: known.sourceUrl } : {}) };
         add({ id: uid(), kind: 'card', card: { type: 'extract', title: `Read from the ${TYPE_CONFIG[type].label.toLowerCase()}`, sample: true, fields: sample.fields.map(f => ({ label: f.label, value: fieldDisplay(f), low: (f.confidence ?? 1) < 0.7 })), lines: sample.lines.map(l => ({ item: l.description, qty: l.quantity, unit: l.unitSen === null ? '—' : formatMoney(l.unitSen), total: l.totalSen === null ? '—' : formatMoney(l.totalSen) })) } });
         await advance(1);
         let po: DocRecord | null = null; let basis = ''; let confirmed = false; let confidence = 0; let comparison: Comparison[] = []; let checkIssues: IssueDraft[] = [];
@@ -289,11 +303,28 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         add({ id: uid(), kind: 'card', card: { type: 'findings', items: created.map(c => ({ severity: c.severity, title: c.title, typeLabel: c.typeLabel })), human: created.length > 0 } });
         await advance(3);
         const link: DocLink[] = po && type !== 'purchase_order' && !created.some(c => c.ruleCode === 'AMBIGUOUS_PO_MATCH') ? [{ id: `LNK-${doc.id}-${po.id}`, sourceId: doc.id, targetId: po.id, relationship: 'for_po', confidence, confirmedBy: confirmed ? 'Explicit PO reference' : null }] : [];
-        const status = type === 'invoice' ? (created.length ? 'NEEDS_REVIEW' : 'VERIFIED') : created.length ? 'NEEDS_REVIEW' : link.length ? 'MATCHED' : 'EXTRACTED';
-        data.commit({ docs: [{ ...doc, status }], links: link, claims: [], issues: created, note: `${TYPE_CONFIG[type].label} ${docNumber(doc)} processed from chat`, entityId: doc.id }, 'Purchasing Agent');
-        add({ id: uid(), kind: 'card', card: { type: 'saved', lines: [`${TYPE_CONFIG[type].label} ${docNumber(doc)} saved${po ? ` under ${docNumber(po)}` : type === 'purchase_order' ? '' : ' as an unmatched record'}.`, type === 'invoice' ? (created.length ? 'Status: needs review. It cannot be exported as a verified invoice until its issues are resolved.' : 'Status: verified — no open issues, so it is eligible for the verified-invoice export.') : `Status: ${status.toLowerCase().replace('_', ' ')}.`, created.length ? `${created.length} issue${created.length === 1 ? '' : 's'} raised in Action Items → Issues.` : 'No issues were raised.'] } });
-        await advance(4);
-        say('Done. You can resolve any issues in Action Items whenever you are ready.');
+        const variance = created.find(c => c.ruleCode === 'PRICE_VARIANCE');
+        if (variance && po && type === 'invoice') {
+          // Report the error in the conversation and hold the record: nothing is saved (and no Action Item exists) until the user chooses.
+          const prices: Record<string, number> = {};
+          const rows = comparison.filter(c => c.flags.includes('Price differs'));
+          for (const l of doc.lines) { const pl = po.lines.find(x => x.description === l.description); if (pl && pl.unitSen !== null && l.unitSen !== null && pl.unitSen !== l.unitSen) prices[l.id] = pl.unitSen; }
+          const grand = docAmount(doc); const poTotal = docAmount(po);
+          add({ id: uid(), kind: 'card', card: { type: 'alert', title: `Invoice ${docNumber(doc)} does not match ${docNumber(po)}`, lines: [
+            ...rows.map(r => `${r.item}: invoice price ${formatMoney(r.invUnit ?? 0)}, but the PO says ${formatMoney(r.poUnit ?? 0)}.`),
+            ...(grand !== null && poTotal !== null && grand !== poTotal ? [`Invoice total ${formatMoney(grand)} against ${formatMoney(poTotal)} on the PO: ${formatMoney(Math.abs(grand - poTotal))} ${grand > poTotal ? 'more' : 'less'}, including sales tax.`] : []),
+            'Nothing is saved yet. Fix it now to save a corrected record, or review it later to save it as needs review and add it to Action Items.'] } });
+          add({ id: uid(), kind: 'quick', prompt: 'Do you want to fix this now, or review it later?', options: [{ id: 'fix_now', label: 'Fix now' }, { id: 'review_later', label: 'Review later' }],
+            ctx: { stepsId, invoiceNo: docNumber(doc), poNo: docNumber(po), varianceId: variance.id, prices, bundle: { doc: { ...doc, status: 'NEEDS_REVIEW' }, links: link, issues: created } } });
+          setStage(4, 'waiting');
+        } else {
+          const status = type === 'invoice' ? (created.length ? 'NEEDS_REVIEW' : 'VERIFIED') : created.length ? 'NEEDS_REVIEW' : link.length ? 'MATCHED' : 'EXTRACTED';
+          data.commit({ docs: [{ ...doc, status }], links: link, claims: [], issues: created, note: `${TYPE_CONFIG[type].label} ${docNumber(doc)} processed from chat`, entityId: doc.id }, 'Purchasing Agent');
+          add({ id: uid(), kind: 'card', card: { type: 'saved', lines: [`${TYPE_CONFIG[type].label} ${docNumber(doc)} saved${po ? ` under ${docNumber(po)}` : type === 'purchase_order' ? '' : ' as an unmatched record'}.`, type === 'invoice' ? (created.length ? 'Status: needs review. It cannot be exported as a verified invoice until its issues are resolved.' : 'Status: verified — no open issues, so it is eligible for the verified-invoice export.') : `Status: ${status.toLowerCase().replace('_', ' ')}.`, created.length ? `${created.length} issue${created.length === 1 ? '' : 's'} raised in Action Items → Issues.` : 'No issues were raised.'] } });
+          await advance(4);
+          await advance(4);
+          say('Done. You can resolve any issues in Action Items whenever you are ready.');
+        }
       }
     } catch (e) {
       setStages(cur => cur.map(s => (s === 'running' ? 'failed' : s)));
@@ -335,6 +366,13 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     }
     const t = clean.toLowerCase();
     const claimish = /claim|receipt|expense|reimburs/.test(t); const purchasish = /invoice|quotation|purchase order|\bpo\b|delivery order|payment|supplier/.test(t);
+    if (files.length && !claimish && !purchasish && looksPurchasing(files[0].name)) {
+      // The file name says it is a supplier document: no need to ask, just run the purchasing workflow.
+      const type = docTypeFor(files[0].name);
+      flow.current = { intent: 'process', stage: 'ask_file' };
+      say(`This looks like a supplier ${TYPE_CONFIG[type].label.toLowerCase()}, so I will treat it as a purchasing document and process it now.`);
+      void run(files[0]); return;
+    }
     if (files.length && !claimish && !purchasish) {
       flow.current = { intent: null, stage: 'ask_file' };
       add({ id: uid(), kind: 'quick', options: [{ id: 'claim', label: 'An expense claim receipt' }, { id: 'process', label: 'A purchasing document' }] });
@@ -350,11 +388,45 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   }, [add, busy, run, say]);
 
   const choose = useCallback((msgId: string, optionId: string) => {
+    const picked = messagesRef.current.find(x => x.id === msgId);
     setMessages(items => items.map(x => (x.id === msgId && x.kind === 'quick' ? { ...x, used: true } : x)));
+    if ((optionId === 'fix_now' || optionId === 'review_later') && picked?.kind === 'quick' && picked.ctx?.bundle) {
+      const ctx = picked.ctx; const { doc, links, issues } = ctx.bundle;
+      const finish = () => { setMessages(items => items.map(x => (x.id === ctx.stepsId && x.kind === 'steps' ? { ...x, steps: x.steps.map(st => ({ ...st, state: 'done' as const })) } : x))); setStage(4, 'completed'); };
+      add({ id: uid(), kind: 'user', text: optionId === 'fix_now' ? 'Fix now' : 'Review later', files: [] });
+      void (async () => {
+        setBusy(true); touch();
+        try {
+          await sleep(1200);
+          if (optionId === 'review_later') {
+            data.commit({ docs: [doc], links, claims: [], issues, note: `Invoice ${ctx.invoiceNo} saved for later review from chat`, entityId: doc.id }, 'Purchasing Agent');
+            finish();
+            add({ id: uid(), kind: 'card', card: { type: 'saved', lines: [`Invoice ${ctx.invoiceNo} saved as needs review under ${ctx.poNo}.`, `${issues.length} issue${issues.length === 1 ? '' : 's'} added to Action Items → Issues.`, 'It cannot be exported as a verified invoice until the price mismatch is resolved.'] } });
+            say('No problem. It is waiting in Action Items for you whenever you are ready.', { to: '/issues', action: 'Open Action Items' });
+            return;
+          }
+          await sleep(1800);   // applying the correction and re-checking against the PO
+          const fixed = repriceInvoice(doc, ctx.prices);
+          const kept = issues.filter(i => i.id !== ctx.varianceId);
+          const fixedDoc: DocRecord = { ...doc, lines: fixed.lines, fields: fixed.fields, status: kept.length ? 'NEEDS_REVIEW' : 'EXTRACTED' };
+          data.commit({ docs: [fixedDoc], links, claims: [], issues: kept, note: `Invoice ${ctx.invoiceNo} saved after correcting unit price(s) to the PO price (chat)`, entityId: doc.id }, 'Purchasing Agent');
+          finish();
+          const before = docAmount(doc); const after = docAmount(fixedDoc);
+          add({ id: uid(), kind: 'card', card: { type: 'fix', title: 'Fixed: price now matches the purchase order',
+            rows: doc.lines.filter(l => ctx.prices[l.id] !== undefined).map(l => ({ item: l.description, from: `${formatMoney(l.unitSen ?? 0)} each`, to: `${formatMoney(ctx.prices[l.id])} each` })),
+            lines: [
+              ...(before !== null && after !== null ? [`Invoice total corrected from ${formatMoney(before)} to ${formatMoney(after)}.`] : []),
+              kept.length ? `Saved under ${ctx.poNo}. ${kept.length} other issue${kept.length === 1 ? '' : 's'} still need attention in Action Items.` : `Re-check against ${ctx.poNo} passed. The record is saved and verified, and nothing was added to Action Items.`,
+              'The supplier’s original invoice still shows the old price, so consider asking the supplier for a credit note or a corrected invoice.'] } });
+          say(kept.length ? 'The remaining issues are in Action Items.' : 'All done. Nothing else needs your attention for this invoice.', kept.length ? { to: '/issues', action: 'Open Action Items' } : {});
+        } finally { setBusy(false); touch(); }
+      })();
+      return;
+    }
     const file = pendingFile.current; pendingFile.current = null;
     if (optionId === 'claim') { flow.current = { intent: 'claim', stage: 'ask_purpose' }; say('What was the expense for? Please give the business purpose and any attendees. I will use the receipt you attached.'); pendingFile.current = file; }
     else { flow.current = { intent: 'process', stage: 'ask_file' }; if (file) void run(file); }
-  }, [run, say]);
+  }, [run, say, add, data, setMessages]);
 
   const reply = useCallback((prompt: string, text: string, link?: { to?: string; hash?: string; action: string }) => {
     add({ id: uid(), kind: 'user', text: prompt, files: [] });
