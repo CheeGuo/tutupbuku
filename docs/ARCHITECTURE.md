@@ -188,6 +188,7 @@ Stage list shown in the UI: `inspect → validate → match → review → expor
 | `GET /api/execution[?run_id=]` | Poll the run |
 | `POST /api/execution/continue` | Answer `{run_id, expected_version, candidate_id, answer, leave_open}` |
 | `GET /api/execution/audit?run_id=` | Per-call agent audit |
+| `POST /api/chat` | Chat box messages the sample flows do not handle go to the main agent (one gateway call, 60/hour limit, no tools, cannot change anything) |
 | `GET /api/exports/<file>?case_id=` | Download a pack file (only when current) |
 | `GET /api/source/<path>?case_id=` | Open an allow-listed source file |
 | `GET /api/health` | Liveness |

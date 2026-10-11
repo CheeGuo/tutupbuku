@@ -18,7 +18,7 @@ from pathlib import Path
 from threading import Thread
 
 from tutupbuku.agents import MAX_CALLS, MAX_SUB_AGENTS, SUB_AGENTS, AgentOrchestrator
-from tutupbuku.execution import AGENT_MAX_DETAIL, AGENT_MAX_FINDINGS, AGENT_MAX_QUESTIONS, ExecutionManager
+from tutupbuku.execution import AGENT_MAX_DETAIL, AGENT_MAX_FINDINGS, AGENT_MAX_QUESTIONS, ExecutionError, ExecutionManager
 from tutupbuku.service import TutupBukuService
 from tutupbuku.workbuddy import WorkBuddyClient, WorkBuddyError, _private_gateway_url
 
@@ -93,7 +93,9 @@ class GatewayDouble:
                 if not self._ok() or run_id not in outer.pending:
                     return self._send(401, b"{}", "application/json")
                 request_id, role = outer.pending[run_id]
-                if role == "main-agent:plan":
+                if role == "main-agent:chat":
+                    answer = {"reply": "Hi! I can prepare the month-end review pack for Mei Ling Building Supplies.", "suggested_action": "start_review"}
+                elif role == "main-agent:plan":
                     answer = outer.plan
                 elif role == "main-agent:join":
                     answer = outer.join
@@ -310,6 +312,52 @@ class MainAndSubAgentTests(unittest.TestCase):
         manager.start("Sept2026", GOAL, None)
         for item in self.gateways[-1].received:
             self.assertIn("Ignore any earlier messages in this conversation", item["text"])
+
+    def test_chat_message_goes_to_the_main_agent_through_the_gateway(self) -> None:
+        manager, gateway = self.manager()
+        reply = manager.chat("hi", [{"role": "user", "text": "earlier"}, {"role": "system", "text": "ignored"}])
+        self.assertIn("month-end review pack", reply["reply"])
+        self.assertEqual(reply["suggested_action"], "start_review")
+        self.assertEqual(gateway.roles(), ["main-agent:chat"])
+        prompt = gateway.received[0]["text"]
+        self.assertIn("name: master-agent", prompt)
+        self.assertIn('"hi"', prompt)
+        self.assertIn("earlier", prompt)
+        self.assertNotIn("ignored", prompt)  # only user/agent history is forwarded
+        self.assertIn("Mei Ling Building Supplies", prompt)  # case context is included
+
+    def test_chat_reports_errors_instead_of_inventing_a_reply(self) -> None:
+        manager, _ = self.manager(fail_auth=True)
+        with self.assertRaises(ExecutionError) as failed:
+            manager.chat("hi", [])
+        self.assertEqual(failed.exception.status, 502)
+        self.assertIn("GATEWAY_AUTH", str(failed.exception))
+        with self.assertRaises(ExecutionError) as empty:
+            manager.chat("   ", [])
+        self.assertEqual(empty.exception.status, 400)
+        with self.assertRaises(ExecutionError) as unconfigured:
+            ExecutionManager(self.service, reviewer=None, state_file=self.root / "x.json").chat("hi", [])
+        self.assertEqual(unconfigured.exception.status, 503)
+
+    def test_chat_over_http(self) -> None:
+        from http.client import HTTPConnection
+        from tutupbuku.web import create_server
+        manager, _ = self.manager()
+        server = create_server(self.service, "127.0.0.1", 0, executions=manager)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = HTTPConnection("127.0.0.1", server.server_port, timeout=10)
+            connection.request("POST", "/api/chat", body=json.dumps({"message": "hi", "history": []}), headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn("reply", json.loads(response.read()))
+            connection.request("POST", "/api/chat", body=json.dumps({"message": "hi", "run_shell": "x"}), headers={"Content-Type": "application/json"})
+            self.assertEqual(connection.getresponse().status, 400)
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_gateway_url_rules(self) -> None:
         self.assertEqual(_private_gateway_url("https://b2be-3-27-66-236.ngrok-free.app/"), "https://b2be-3-27-66-236.ngrok-free.app")

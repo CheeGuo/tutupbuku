@@ -13,6 +13,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ STAGES = (
 )
 ACTIVE = {"running", "waiting_for_input"}
 MAX_AGENT_RUNS_PER_HOUR = int(os.environ.get("TUTUPBUKU_MAX_AGENT_RUNS_PER_HOUR", "10"))
+MAX_CHAT_MESSAGES_PER_HOUR = int(os.environ.get("TUTUPBUKU_MAX_CHAT_MESSAGES_PER_HOUR", "60"))
 MAX_EVENTS = 200
 # Hard caps on what the agent can put on screen, whatever it returns.
 AGENT_MAX_FINDINGS = 6
@@ -116,6 +118,7 @@ class ExecutionManager:
     def __init__(self, service: TutupBukuService, *, reviewer: WorkBuddyReviewer | Any | None = None, state_file: Path | None = None, synchronous: bool = False, max_agent_runs_per_hour: int = MAX_AGENT_RUNS_PER_HOUR) -> None:
         self.service = service
         self.max_agent_runs_per_hour = max_agent_runs_per_hour
+        self._chat_times: list[float] = []
         self.reviewer = reviewer
         self.synchronous = synchronous  # tests run the phases inline
         self.state_file = Path(state_file) if state_file else service.project_root / ".tutupbuku-job-state" / "executions.json"
@@ -274,6 +277,40 @@ class ExecutionManager:
         self._stage(run, "review", "running", "Applying your answer")
         self._launch(run, self._phase_after_answer)
         return self.public(run)
+
+    def chat(self, message: Any, history: Any, case_id: str | None = None) -> dict[str, Any]:
+        """Send one operator chat message to the main agent through the gateway."""
+        if not isinstance(message, str) or not message.strip() or len(message) > 1000:
+            raise ExecutionError("Enter a message of 1 to 1000 characters.")
+        reviewer = self.reviewer
+        if reviewer is None or not getattr(reviewer, "configured", False) or not hasattr(reviewer, "chat"):
+            raise ExecutionError("The WorkBuddy agent is not configured on this server (set CODEBUDDY_GATEWAY_URL and CODEBUDDY_GATEWAY_PASSWORD in .env).", 503)
+        now = time.monotonic()
+        with self._lock:
+            self._chat_times = [t for t in self._chat_times if now - t < 3600]
+            if len(self._chat_times) >= MAX_CHAT_MESSAGES_PER_HOUR:
+                raise ExecutionError(f"The chat limit of {MAX_CHAT_MESSAGES_PER_HOUR} messages per hour is reached. Try again later.", 429)
+            self._chat_times.append(now)
+        safe_history = []
+        if isinstance(history, list):
+            for item in history[-6:]:
+                if isinstance(item, dict) and item.get("role") in {"user", "agent"} and isinstance(item.get("text"), str):
+                    safe_history.append({"role": item["role"], "text": item["text"][:500]})
+        case_id = case_id or self.service.default_case_id
+        try:
+            case = self.service.get_case(case_id)
+            case_summary = {"case_id": case_id, "business_name": case.get("business_name"), "period": [case.get("period_start"), case.get("period_end")], "files": len(case.get("files", [])), "saved_decisions": len(case.get("decisions", []))}
+        except (ValueError, OSError):
+            case_summary = {"case_id": case_id, "available": False}
+        latest = self.current()
+        run_summary = None
+        if latest:
+            run_summary = {"status": latest["status"], "question_row": (latest.get("question") or {}).get("row_id"), "pack": latest.get("pack"), "error": latest.get("error"),
+                           "stages": {s["id"]: s["status"] for s in latest.get("stages", [])}}
+        try:
+            return reviewer.chat(message.strip(), safe_history, {"case": case_summary, "latest_run": run_summary})
+        except WorkBuddyError as exc:
+            raise ExecutionError(f"The WorkBuddy agent could not answer ({exc.code}): {str(exc).rstrip('.')}.", 502) from exc
 
     def audit(self, run_id: str) -> dict[str, Any] | None:
         """The per-call agent audit (prompt hash, raw reply, timing, tool use) for one run."""

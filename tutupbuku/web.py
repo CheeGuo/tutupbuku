@@ -239,7 +239,13 @@ def create_server(
             try:
                 payload = self._read_json()
                 case_id = self._case_id({}, payload)
-                if parsed.path in {"/api/execution", "/api/execution/continue"}:
+                if parsed.path == "/api/chat":
+                    if executions is None:
+                        self._error(HTTPStatus.SERVICE_UNAVAILABLE, "execution service is not configured")
+                        return
+                    self._check_keys(payload, {"message", "history", "case_id"})
+                    self._send_json(HTTPStatus.OK, executions.chat(payload.get("message"), payload.get("history"), case_id))
+                elif parsed.path in {"/api/execution", "/api/execution/continue"}:
                     if executions is None:
                         self._error(HTTPStatus.SERVICE_UNAVAILABLE, "execution service is not configured")
                         return

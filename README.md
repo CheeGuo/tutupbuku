@@ -59,6 +59,7 @@ baseline and reports the results as counts (about 5 gateway calls per run).
 | `POST /api/execution` | Start a run: `{case_id, goal, request_id}` |
 | `GET /api/execution[?run_id=]` | Poll the run (stages, events, question, pack) |
 | `POST /api/execution/continue` | Answer the question: `{run_id, expected_version, candidate_id, answer, leave_open}` |
+| `POST /api/chat` | One chat message to the real main agent through the gateway: `{message, history}` |
 | `GET /api/exports/<file>`, `GET /api/source/<path>` | Download a pack file or open a source file |
 
 The lower-level routes (`/api/run`, `/api/decisions`, `/api/build-review-pack`, ...) and the MCP tools

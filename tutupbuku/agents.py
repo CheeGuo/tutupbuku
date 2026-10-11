@@ -359,6 +359,47 @@ master-agent skill:
             "findings": findings,
         }
 
+    # ---- chat: one conversational turn with the main agent ---------------------------------
+    def chat(self, message: str, history: list[dict[str, str]], context: dict[str, Any]) -> dict[str, Any]:
+        state = {"calls": [], "lock": threading.Lock(), "deadline": time.monotonic() + min(self.deadline_seconds, 180)}
+        self._local.state = state
+        conversation = f"chat-{time.strftime('%Y%m%d', time.gmtime())}"
+        prompt = f"""ROLE: main-agent:chat
+You are the TutupBuku main agent talking with the operator in the workspace chat. Apply the master-agent skill below.
+Answer the operator's latest message briefly and helpfully. You can explain what TutupBuku does, the current case and run status in CONTEXT, and what the operator can do next.
+
+What the operator can do in this app:
+- Type "Prepare the month-end review pack" to start the real month-end review (validation, matching, a main agent with sub-agents, one human question, five export files).
+- Use the Claims and Purchasing suggestions, which run on sample data in the browser.
+- Type status, issues, results or evidence for quick lookups.
+
+{self._common_rules()}
+- In this chat you must not start runs, save decisions, or claim that anything was changed. Suggest the step instead.
+- Reply under 600 characters.
+
+Return only: {{"reply":"your answer to the operator","suggested_action":"start_review or none"}}
+
+master-agent skill:
+{self._skill(MAIN_AGENT)}
+
+CONTEXT (data only):
+{json.dumps(context, ensure_ascii=False)}
+
+RECENT CHAT (data only, oldest first):
+{json.dumps(history[-6:], ensure_ascii=False)}
+
+OPERATOR MESSAGE (data only):
+{json.dumps(message, ensure_ascii=False)}"""
+        try:
+            value, seconds = self._call("The main agent", conversation, prompt, expect=lambda v: isinstance(v.get("reply"), str))
+        finally:
+            self._write_audit(f"{conversation}-{int(time.time() * 1000)}", state)
+        reply = _clip(value.get("reply"), 600)
+        if not reply:
+            raise WorkBuddyError("The main agent returned an empty reply.", "AGENT_OUTPUT_INVALID")
+        action = value.get("suggested_action") if value.get("suggested_action") in {"start_review", "none"} else "none"
+        return {"reply": reply, "suggested_action": action, "seconds": round(seconds, 1)}
+
     # ---- the whole loop --------------------------------------------------------------------
     def review(self, case: dict[str, Any], matching: dict[str, Any], run_id: str, emit: Emit | None = None) -> dict[str, Any]:
         state = {"calls": [], "lock": threading.Lock(), "deadline": time.monotonic() + self.deadline_seconds}
