@@ -13,6 +13,42 @@ const SECURITY_HEADERS = {
   'permissions-policy': 'camera=(), microphone=(), geolocation=()',
   'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
 };
+const CORS_METHODS = 'GET, POST, PUT, OPTIONS';
+const CORS_HEADERS = 'authorization, content-type, idempotency-key, ngrok-skip-browser-warning, x-claim-purpose, x-filename, x-workflow';
+const DEVELOPMENT_ORIGINS = new Set(['http://localhost:5173', 'http://127.0.0.1:5173']);
+
+function allowedOrigins(env) {
+  const configured = String(env.TUTUPBUKU_ALLOWED_ORIGINS || '').split(',').map((value) => value.trim()).filter(Boolean);
+  const origins = new Set(env.NODE_ENV === 'production' ? [] : DEVELOPMENT_ORIGINS);
+  for (const value of configured) {
+    try {
+      const url = new URL(value);
+      if (['http:', 'https:'].includes(url.protocol) && url.origin === value.replace(/\/$/u, '')) origins.add(url.origin);
+    } catch { /* Invalid origins are ignored and cannot broaden access. */ }
+  }
+  return origins;
+}
+
+function isLocalDevelopmentOrigin(origin) {
+  return DEVELOPMENT_ORIGINS.has(origin);
+}
+
+function isTrustedLocalDevelopmentProxy(request, env) {
+  const secret = String(env.TUTUPBUKU_DEV_PROXY_SECRET || '').trim();
+  return Boolean(secret && isLocalDevelopmentOrigin(request.headers.origin)
+    && request.headers['x-tutupbuku-dev-proxy'] === secret);
+}
+
+function corsResponseHeaders(origin) {
+  return {
+    'access-control-allow-origin': origin,
+    'access-control-allow-methods': CORS_METHODS,
+    'access-control-allow-headers': CORS_HEADERS,
+    'access-control-expose-headers': 'content-disposition',
+    'access-control-max-age': '600',
+    vary: 'Origin',
+  };
+}
 
 function json(response, status, data) {
   response.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -110,12 +146,31 @@ function createApplication({ env = process.env, store, processDocument, fetchImp
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost');
     try {
+      const isApiRequest = url.pathname === '/api' || url.pathname.startsWith('/api/');
+      const origin = request.headers.origin;
+      const origins = allowedOrigins(env);
+      if (isApiRequest && origin && !origins.has(origin)) return json(response, 403, { error: 'This frontend origin is not allowed.' });
+      if (isApiRequest && origin && origins.has(origin)) {
+        for (const [name, value] of Object.entries(corsResponseHeaders(origin))) response.setHeader(name, value);
+      }
+      if (isApiRequest && request.method === 'OPTIONS') {
+        if (!origin || !origins.has(origin)) return json(response, 403, { error: 'This frontend origin is not allowed.' });
+        const requestedMethod = String(request.headers['access-control-request-method'] || '').toUpperCase();
+        if (!['GET', 'POST', 'PUT'].includes(requestedMethod)) return json(response, 405, { error: 'This API method is not allowed.' });
+        const allowed = new Set(CORS_HEADERS.split(',').map((header) => header.trim()));
+        const requestedHeaders = String(request.headers['access-control-request-headers'] || '').toLowerCase().split(',').map((header) => header.trim()).filter(Boolean);
+        if (requestedHeaders.some((header) => !allowed.has(header))) return json(response, 403, { error: 'This API request header is not allowed.' });
+        response.writeHead(204, { ...SECURITY_HEADERS, ...corsResponseHeaders(origin) });
+        return response.end();
+      }
       if (request.method === 'GET' && url.pathname === '/api/health') return json(response, 200, { status: 'ok', service: 'tutupbuku' });
       if (request.method === 'GET' && url.pathname === '/api/config') {
+        const localDevelopmentAuth = env.NODE_ENV !== 'production' && !String(env.SUPABASE_URL || '').trim()
+          && (String(env.NGROK_URL || '').trim() ? isTrustedLocalDevelopmentProxy(request, env) : isLocalDevelopmentOrigin(origin));
         return json(response, 200, {
           aiConfigured: Boolean(String(env.AI_BASE_URL || '').trim() && String(env.AI_MODEL || '').trim()), maxUploadBytes: MAX_UPLOAD_BYTES,
-          authMode: supabaseStoreConfigured ? 'supabase' : env.NODE_ENV === 'production' ? 'unconfigured' : 'local-development',
-          ...(supabaseStoreConfigured ? { supabaseUrl: String(env.SUPABASE_URL).trim(), supabaseAnonKey: String(env.SUPABASE_ANON_KEY).trim() } : {}),
+          authMode: supabaseAuthConfigured ? 'supabase' : localDevelopmentAuth ? 'local-development' : 'unconfigured',
+          ...(supabaseAuthConfigured ? { supabaseUrl: String(env.SUPABASE_URL).trim(), supabaseAnonKey: String(env.SUPABASE_ANON_KEY).trim() } : {}),
         });
       }
       if (request.method === 'GET' && !url.pathname.startsWith('/api/')) {
@@ -149,7 +204,9 @@ function createApplication({ env = process.env, store, processDocument, fetchImp
       }
 
       if (request.method === 'POST' && url.pathname === '/api/auth/local') {
-        if (env.NODE_ENV === 'production' || String(env.SUPABASE_URL || '').trim()) return json(response, 404, { error: 'Not found.' });
+        const localDevelopmentAuth = env.NODE_ENV !== 'production' && !String(env.SUPABASE_URL || '').trim()
+          && (String(env.NGROK_URL || '').trim() ? isTrustedLocalDevelopmentProxy(request, env) : isLocalDevelopmentOrigin(origin));
+        if (!localDevelopmentAuth) return json(response, 404, { error: 'Not found.' });
         const body = JSON.parse((await readBody(request, 16_384)).toString('utf8'));
         const email = String(body.email || '').trim().toLowerCase();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)) return json(response, 400, { error: 'Enter a valid email address.' });

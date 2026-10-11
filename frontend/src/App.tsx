@@ -7,8 +7,14 @@ import { AppShell } from './layout/AppShell';
 import { Execution } from './pages/Execution';
 import { Documents } from './pages/Documents';
 import { ActionItems } from './pages/ActionItems';
+import { AuthProvider, useAuth } from './state/auth';
+import { SignIn } from './pages/SignIn';
 
-export default function App() {
+function Workspace() {
+  const { user, loading } = useAuth();
+  if (loading) return <main className="auth-page"><p role="status">Connecting to the backend…</p></main>;
+  if (!user) return <SignIn />;
+
   return <DataProvider><AgentProvider><ExecutionProvider><BrowserRouter><Routes>
     <Route element={<AppShell />}>
       <Route path="/" element={<Execution />} />
@@ -18,4 +24,8 @@ export default function App() {
     <Route path="/exceptions" element={<Navigate to="/issues" replace />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes></BrowserRouter></ExecutionProvider></AgentProvider></DataProvider>;
+}
+
+export default function App() {
+  return <AuthProvider><Workspace /></AuthProvider>;
 }

@@ -7,7 +7,7 @@ import { formatMoney } from './format';
 export type IssueDraft = Omit<Issue, 'id' | 'createdAt' | 'status'>;
 
 export interface Comparison {
-  item: string; poQty: number | null; poUnit: number | null; invQty: number; invUnit: number | null; delivered: number | null; flags: string[];
+  item: string; poQty: number | null; poUnit: number | null; invQty: number | null; invUnit: number | null; delivered: number | null; flags: string[];
 }
 
 export interface InvoiceCheck {
@@ -67,9 +67,9 @@ export function checkInvoice(inv: DocRecord, docs: DocRecord[], links: DocLink[]
       if (!pl) flags.push('Not on PO');
       else {
         if (pl.unitSen !== null && line.unitSen !== null && pl.unitSen !== line.unitSen) flags.push('Price differs');
-        if (line.quantity > pl.quantity) flags.push('More than ordered');
+        if (line.quantity !== null && pl.quantity !== null && line.quantity > pl.quantity) flags.push('More than ordered');
       }
-      if (got !== null && line.quantity > got) flags.push('More than delivered');
+      if (got !== null && line.quantity !== null && line.quantity > got) flags.push('More than delivered');
       comparison.push({ item: line.description, poQty: pl?.quantity ?? null, poUnit: pl?.unitSen ?? null, invQty: line.quantity, invUnit: line.unitSen, delivered: got, flags });
     }
     if (comparison.some(c => c.flags.includes('Price differs'))) issues.push({ ruleCode: 'PRICE_VARIANCE', typeLabel: 'Unit-price mismatch', severity: 'HIGH', docIds: [inv.id, po.id],

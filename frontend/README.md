@@ -1,27 +1,36 @@
 # TutupBuku frontend
 
-React + TypeScript (Vite). Three pages, following `TutupBuku_Project_Context.md`:
+React + TypeScript (Vite) workspace for authenticated purchasing documents, employee claims, backend processing progress, issues, review decisions, and approved exports.
 
-| Page | Route | Data |
-| --- | --- | --- |
-| Agentic Live Execution | `/` | **Live** — Python service (`/api/execution`, `/api/cases`, `/api/exports/*`). The orbit follows the real stage state. |
-| Documents | `/documents` | **Dummy** purchasing chains and claims (`src/data/dummy.ts`), plus **live** case source files (`Live case files` tab). |
-| Issues | `/issues` | **Dummy** issues (`INFO` / `WARNING` / `HIGH`, `OPEN → UNDER_REVIEW → RESOLVED \| DISMISSED`), plus **live** run issues (`Live run` tab). |
+## Local development
 
-The backend currently implements the month-end bank-matching workflow only. Purchasing and claims screens run on
-session-only dummy data (state in `src/state/store.tsx`, reset on reload) and are labelled "Sample data" in the UI.
+Run the Node backend from the repository root. It loads the root `.env` file and listens on port `3000` by default:
 
-## Run
-
-```bash
-npm install
-npm run build                                  # type-check + production build to dist/
-python -m tutupbuku.app --frontend --web-only  # from the repo root; serves dist/ and /api on :8765
-npm run dev                                    # Vite on :5173, proxying /api to :8765
+```powershell
+node --env-file-if-exists=.env src/server.js
 ```
 
-## Orbit
+In a second terminal, start Vite:
 
-`src/components/Orbit.tsx` ports the canvas orbit from `orbitanimation.html` (3D-rotated ellipses, perspective
-projection, mouse parallax, depth-sorted nodes). Speed follows the run state; it pauses when offscreen or hidden and
-renders one still frame under `prefers-reduced-motion`.
+```powershell
+cd frontend
+npm run dev
+```
+
+Vite proxies `/api/*` to the backend. When root `.env` contains a live `NGROK_URL`, it sends API requests through that HTTPS tunnel; otherwise it uses `http://127.0.0.1:3000`. The root `.env` must also contain `TUTUPBUKU_DEV_PROXY_SECRET` for local development through ngrok. Keep that secret private and out of frontend build variables.
+
+The separate month-end bank-matching flow uses the Python service at `127.0.0.1:8765` through `/month-end-api/*`.
+
+## Backend processing and sign-in
+
+Local sign-in is development-only. The backend accepts raw uploads, retains the source file, creates a processing job, and exposes progress and results to the authenticated workspace. AI/OCR processing remains unavailable until `AI_BASE_URL` and `AI_MODEL` are configured in the backend environment. A file accepted while processing is unconfigured remains in Documents with its backend status; the UI must not fabricate extracted values.
+
+For a deployed Vercel frontend, set `VITE_API_BASE_URL` to the public HTTPS backend origin in Vercel's environment settings and set the exact deployed frontend origin in the backend's `TUTUPBUKU_ALLOWED_ORIGINS`. Configure `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` on the backend for production sign-in and storage. Do not use local sign-in or a development proxy secret on a public deployment. A Vercel build cannot read a developer's ignored local `.env` file.
+
+## Build
+
+```powershell
+npm run build
+```
+
+The build type-checks the frontend and writes the deployable bundle to `frontend/dist/`.

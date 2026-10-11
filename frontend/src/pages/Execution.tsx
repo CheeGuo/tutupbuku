@@ -6,6 +6,7 @@ import { DEMO_STAGES, STARTERS, useAgent } from '../lib/agent';
 import { HumanCheckpoint } from '../components/ExecutionReview';
 import { ChatMessage } from '../components/ChatCards';
 import { Orbit, OrbitMode, OrbitNode } from '../components/Orbit';
+import { useData } from '../state/store';
 
 const SHORT = ['Inspect', 'Validate', 'Match', 'Review', 'Export'];
 const ICONS: OrbitNode['icon'][] = ['document', 'filter', 'link', 'person', 'arrow'];
@@ -17,6 +18,7 @@ const FILE_OK = /\.(pdf|png|jpe?g|webp)$/i;
 export function Execution() {
   const { cases, caseId, caseData, draft, setDraft, run, connection, error, pending, busy, start, reconnect, changeCase, changeGoal, setError } = useExecution();
   const agent = useAgent();
+  const backend = useData();
   const [workflow, setWorkflow] = useState<'demo' | 'run'>(run ? 'run' : 'demo');
   const [hideRun, setHideRun] = useState(false);   // the month-end run is a separate conversation; a new chat hides it
   const [files, setFiles] = useState<File[]>([]);
@@ -45,20 +47,21 @@ export function Execution() {
   /* ---- what the orbit and stage list describe: the workflow the user touched last ---- */
   const demo = workflow === 'demo' || !run || hideRun;
   const runStages = run?.stages || STEPS.map(([id, label, executor]) => ({ id, label, executor, status: 'queued', detail: '' }));
-  const demoStages = DEMO_STAGES.map((label, i) => ({ id: `d${i}`, label, executor: 'Demo agent', status: agent.stages[i], detail: '' }));
+  const demoStages = DEMO_STAGES.map((label, i) => ({ id: `d${i}`, label, executor: 'TutupBuku backend', status: agent.stages[i], detail: '' }));
   const stages = demo ? demoStages : runStages;
   const currentStage = stages.find(stage => ['running', 'waiting'].includes(stage.status));
   const focusStage = stages.find(stage => stage.id === focusId) || currentStage;
   const completed = stages.filter(stage => stage.status === 'completed').length;
   const mode: OrbitMode = demo
-    ? (agent.stages.includes('failed') ? 'error' : agent.busy ? 'running' : agent.stages.includes('waiting') ? 'waiting' : agent.stages.every(s => s === 'completed') ? 'done' : 'idle')
+    ? (agent.stages.includes('failed') ? 'error' : agent.busy || agent.stages.includes('running') ? 'running' : agent.stages.includes('waiting') ? 'waiting' : agent.stages.every(s => s === 'completed') ? 'done' : 'idle')
     : !run ? 'idle' : run.error || run.status === 'failed' ? 'error' : run.status === 'running' ? 'running' : run.status === 'waiting_for_input' ? 'waiting' : run.status === 'completed' ? 'done' : 'idle';
   const nodes: OrbitNode[] = stages.map((stage, i) => ({ id: stage.id, label: demo ? stage.label : SHORT[i] ?? stage.label, status: stage.status, icon: ICONS[i % ICONS.length] }));
   const matched = run?.matching?.bank_rows.filter(row => ['proposed_match', 'confirmed_by_operator'].includes(row.state)).length || 0;
   const issueCount = (run?.matching?.exceptions.length || 0) + (run?.input_issues?.length || 0);
   const showRun = Boolean(run) && !hideRun;
+  const showRunError = workflow === 'run' && Boolean(error);
   const active = showRun || agent.active;
-  const stateLine = demo ? (agent.busy ? 'Working' : agent.stages.includes('waiting') ? 'Waiting for you' : agent.stages.every(s => s === 'completed') ? 'Done' : 'Ready') : run ? stageLabel(run.status) : '';
+  const stateLine = demo ? (agent.busy || agent.stages.includes('running') ? 'Processing' : agent.stages.includes('waiting') ? 'Waiting for you' : agent.stages.every(s => s === 'completed') ? 'Done' : 'Ready') : run ? stageLabel(run.status) : '';
 
   useEffect(() => { end.current?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' }); },
     [run?.events.length, run?.status, agent.messages.length]);
@@ -95,7 +98,7 @@ export function Execution() {
     const controller = new AbortController(); previewRequest.current = controller;
     setPreviewPending(true); setReportPreview(null);
     try {
-      const response = await fetch(`/api/exports/${encodeURIComponent(file)}?case_id=${encodeURIComponent(run.case_id)}&run_id=${run.id}`, { signal: controller.signal });
+      const response = await fetch(`/month-end-api/exports/${encodeURIComponent(file)}?case_id=${encodeURIComponent(run.case_id)}&run_id=${run.id}`, { signal: controller.signal });
       if (!response.ok) { const detail = await response.json().catch(() => ({})); throw new Error(detail.error || 'Report preview is unavailable.'); }
       const text = await response.text();
       if (!controller.signal.aborted) setReportPreview({ file, text });
@@ -109,6 +112,8 @@ export function Execution() {
   const onOpenRun = () => { agent.newChat(); setHideRun(false); setWorkflow('run'); };
   const closeHistory = (e: React.MouseEvent) => { const d = (e.currentTarget as HTMLElement).closest('details'); if (d) d.open = false; };
   const historyCount = agent.chats.length + (run ? 1 : 0);
+  const availableStarters = agent.role === 'employee' ? STARTERS.filter(item => item.group === 'Claims') : STARTERS;
+  const backendNotice = backend.connection === 'offline' && <div className="notice notice-error" role="alert"><div><strong>Purchasing and claims backend offline</strong><p>{backend.error}</p></div><button className="btn btn-sm" onClick={() => void backend.refresh()}>Reconnect</button></div>;
   const chatBar = <div className="chat-bar">
     <details className="history">
       <summary className="btn btn-ghost btn-sm" aria-label="Chat history">
@@ -143,7 +148,7 @@ export function Execution() {
     {fileError && <p className="error-text" role="alert">{fileError}</p>}
     <div className="composer-foot">
       {active ? <div className="quick" aria-label="Quick lookups">{COMMANDS.map(c => <button key={c} type="button" onClick={() => lookup(c)}>{c}</button>)}
-        <details className="suggest"><summary>suggestions</summary><div className="suggest-panel">{STARTERS.map(s => <button key={s.id} type="button" disabled={working} onClick={e => { e.currentTarget.closest('details')!.open = false; setWorkflow('demo'); agent.startIntent(s.id); }}>{s.label}</button>)}
+        <details className="suggest"><summary>suggestions</summary><div className="suggest-panel">{availableStarters.map(s => <button key={s.id} type="button" disabled={working} onClick={e => { e.currentTarget.closest('details')!.open = false; setWorkflow('demo'); agent.startIntent(s.id); }}>{s.label}</button>)}
           {run && !busy && <button type="button" onClick={e => { e.currentTarget.closest('details')!.open = false; setDraft(DEFAULT_GOAL); changeGoal(DEFAULT_GOAL); composer.current?.focus(); }}>Prepare the month-end review pack</button>}</div></details></div>
         : <span className="hint">Enter to send · Shift + Enter for a new line · attach PDFs or images with the paperclip</span>}
       {cases.length > 1 && <label className="case-pick">Case <select value={caseId} disabled={Boolean(busy)} onChange={e => changeCase(e.target.value)} aria-label="Review case">
@@ -167,7 +172,7 @@ export function Execution() {
               </button>
             </li>)}
           </ol>
-          {demo && <p className="stage-detail">Demo agent: file reading uses prepared sample extractions. Matching, comparisons, duplicate checks and saving are real.</p>}
+          {demo && <p className="stage-detail">Uploads and progress come from the authenticated business backend. Review extracted records and any issues before approving or exporting.</p>}
           {!demo && focusStage && <p className="stage-detail"><strong>{focusStage.executor}</strong>{focusStage.detail ? ` — ${focusStage.detail}` : ''}</p>}
         </>}
       </div>
@@ -176,19 +181,21 @@ export function Execution() {
     <section className="live-main" aria-label="Agentic Live Execution conversation">
       {chatBar}
       {!active ? <div className="hero">
-        <span className="kicker">Agentic month-end workspace</span>
+        <span className="kicker">Purchasing and claims workspace</span>
         <h1>What would you like to do?</h1>
         <p>Submit a claim or process a purchasing document. Attach files right here and I will read them, check them and save the result.</p>
-        {error && <div className="notice notice-error" role="alert"><div><strong>{connection === 'offline' ? 'Review service offline' : 'Action required'}</strong><p>{error}</p></div><button className="btn btn-sm" onClick={reconnect}>Reconnect</button></div>}
+        {backendNotice}
+        {showRunError && <div className="notice notice-error" role="alert"><div><strong>{connection === 'offline' ? 'Review service offline' : 'Action required'}</strong><p>{error}</p></div><button className="btn btn-sm" onClick={reconnect}>Reconnect</button></div>}
         {composerForm}
         <div className="starters" aria-label="Suggested prompts">
           {(['Claims', 'Purchasing'] as const).map(group => <div key={group} className="starter-group"><span className="starter-label">{group}</span>
-            <div className="starter-grid">{STARTERS.filter(s => s.group === group).map(s => <button key={s.id} type="button" className="chip starter-card" onClick={() => { setWorkflow('demo'); agent.startIntent(s.id); }}>
+            <div className="starter-grid">{availableStarters.filter(s => s.group === group).map(s => <button key={s.id} type="button" className="chip starter-card" onClick={() => { setWorkflow('demo'); agent.startIntent(s.id); }}>
               <svg viewBox="0 0 24 24" aria-hidden="true">{group === 'Claims' ? <><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" /><path d="M9 8h6M9 12h6" /></> : <><path d="M6 3h9l4 4v14H6z" /><path d="M15 3v5h5M9 13h6M9 17h6" /></>}</svg>
               <span>{s.label}<small>{HINTS[s.id]}</small></span></button>)}</div></div>)}
         </div>
       </div> : <>
         <div className="thread">
+          {backendNotice}
           {showRun && run && <>
             <div className="msg msg-user"><div className="bubble"><span className="meta">You · {formatTimestamp(run.started_at)}</span><p>{run.goal}</p></div></div>
             {run.events.map(event => <div className="msg msg-agent" key={`${run.id}:${event.id}`}><span className="avatar" aria-hidden="true" /><div className="bubble"><span className="meta">{event.actor} · {formatTimestamp(event.timestamp)}</span><p>{event.message}</p></div></div>)}
@@ -203,7 +210,7 @@ export function Execution() {
             {run.pack && <section id="review-pack" className="pack" aria-label="Review pack outputs">
               <div className="pack-head"><strong>Review pack exported</strong><span className="muted">{run.pack.files.length} files · {run.pack.open_item_count} open items · {run.pack.decision_count} decisions. This is a review pack, not a completed close.</span></div>
               {run.pack_current === false ? <div className="notice notice-warn">Underlying records changed. Re-run before downloading; these exports are stale.</div> : <>
-                <div className="pack-files">{run.pack.files.map(file => <a key={file} className="file" href={`/api/exports/${encodeURIComponent(file)}?case_id=${encodeURIComponent(run.case_id)}&run_id=${run.id}`} download={file}><span className="file-kind">{file.endsWith('.csv') ? 'CSV' : 'MD'}</span><span><strong>{OUTPUTS[file]?.[0] || file}</strong><small>{OUTPUTS[file]?.[1]}</small></span><span aria-hidden="true">↓</span></a>)}</div>
+                <div className="pack-files">{run.pack.files.map(file => <a key={file} className="file" href={`/month-end-api/exports/${encodeURIComponent(file)}?case_id=${encodeURIComponent(run.case_id)}&run_id=${run.id}`} download={file}><span className="file-kind">{file.endsWith('.csv') ? 'CSV' : 'MD'}</span><span><strong>{OUTPUTS[file]?.[0] || file}</strong><small>{OUTPUTS[file]?.[1]}</small></span><span aria-hidden="true">↓</span></a>)}</div>
                 <div className="actions"><button className="btn btn-sm" disabled={previewPending} onClick={() => previewReport('03_records_summary.md')}>Preview records summary</button><button className="btn btn-sm" disabled={previewPending} onClick={() => previewReport('02_exceptions.md')}>Preview issue report</button></div>
                 {(previewPending || reportPreview) && <div className="preview" aria-live="polite"><div className="preview-head"><strong>{reportPreview?.file || 'Loading report…'}</strong><button className="btn btn-sm" onClick={() => { previewRequest.current?.abort(); setPreviewPending(false); setReportPreview(null); }}>Close</button></div><pre>{reportPreview?.text || 'Loading verified export content…'}</pre></div>}
               </>}
@@ -212,7 +219,7 @@ export function Execution() {
           {agent.messages.map(msg => <ChatMessage key={msg.id} msg={msg} onChoose={agent.choose} />)}
           <div ref={end} />
         </div>
-        {error && <div className="notice notice-error" role="alert"><div><strong>Action required</strong><p>{error}</p></div><button className="btn btn-sm" onClick={reconnect}>Reconnect</button></div>}
+        {showRunError && <div className="notice notice-error" role="alert"><div><strong>Action required</strong><p>{error}</p></div><button className="btn btn-sm" onClick={reconnect}>Reconnect</button></div>}
         {composerForm}
       </>}
     </section>

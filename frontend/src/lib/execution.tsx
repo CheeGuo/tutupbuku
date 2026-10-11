@@ -40,7 +40,8 @@ export async function request<T>(url: string, body?: unknown, signal?: AbortSign
   }
   return response.json();
 }
-export const sourceUrl = (caseId: string, path: string) => `/api/source/${encodeURIComponent(path.split('#')[0])}?case_id=${encodeURIComponent(caseId)}`;
+const MONTH_END_API = '/month-end-api';
+export const sourceUrl = (caseId: string, path: string) => `${MONTH_END_API}/source/${encodeURIComponent(path.split('#')[0])}?case_id=${encodeURIComponent(caseId)}`;
 export const stageLabel = (state: string) => ({ queued: 'Queued', running: 'Running', completed: 'Done', waiting: 'Needs your answer', waiting_for_input: 'Waiting for your answer', failed: 'Stopped' }[state] || state);
 
 function useExecutionState() {
@@ -71,7 +72,7 @@ function useExecutionState() {
   useEffect(() => {
     const controller = new AbortController();
     setConnection('checking');
-    Promise.all([request<{ cases: CaseSummary[] }>('/api/cases', undefined, controller.signal), request<{ run: Run | null }>('/api/execution', undefined, controller.signal)])
+    Promise.all([request<{ cases: CaseSummary[] }>(`${MONTH_END_API}/cases`, undefined, controller.signal), request<{ run: Run | null }>(`${MONTH_END_API}/execution`, undefined, controller.signal)])
       .then(([available, current]) => {
         setCases(available.cases);
         setCaseId(current.run?.case_id || available.cases[0]?.case_id || '');
@@ -86,7 +87,7 @@ function useExecutionState() {
     if (!caseId) return;
     const controller = new AbortController();
     setCaseData(null);
-    request<ReviewCase>(`/api/case?case_id=${encodeURIComponent(caseId)}`, undefined, controller.signal).then(setCaseData).catch(e => { if (e.name !== 'AbortError') setError(e.message); });
+    request<ReviewCase>(`${MONTH_END_API}/case?case_id=${encodeURIComponent(caseId)}`, undefined, controller.signal).then(setCaseData).catch(e => { if (e.name !== 'AbortError') setError(e.message); });
     return () => controller.abort();
   }, [caseId, refresh]);
   useEffect(() => {
@@ -95,7 +96,7 @@ function useExecutionState() {
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const response = await request<{ run: Run }>(`/api/execution?run_id=${run.id}`, undefined, controller.signal);
+        const response = await request<{ run: Run }>(`${MONTH_END_API}/execution?run_id=${run.id}`, undefined, controller.signal);
         setRun(response.run); setConnection('connected');
         if (['running', 'waiting_for_input'].includes(response.run.status)) timer = setTimeout(poll, 700);
       } catch (e) {
@@ -114,7 +115,7 @@ function useExecutionState() {
     const id = runRequestId.current || crypto.randomUUID();
     runRequestId.current = id;
     try {
-      const response = await request<{ run: Run }>('/api/execution', { case_id: caseId, goal: submittedGoal, request_id: id });
+      const response = await request<{ run: Run }>(`${MONTH_END_API}/execution`, { case_id: caseId, goal: submittedGoal, request_id: id });
       if (mounted.current) { setRun(response.run); setGoal(submittedGoal); setDraft(''); runRequestId.current = null; }
     } catch (e) { if (mounted.current) setError((e as Error).message); }
     finally { submission.current = false; if (mounted.current) setPending(false); }
@@ -123,7 +124,7 @@ function useExecutionState() {
     if (!run || submission.current || run.status !== 'waiting_for_input' || connection !== 'connected') return;
     submission.current = true; setPending(true); setError('');
     try {
-      const response = await request<{ run: Run }>('/api/execution/continue', { run_id: run.id, expected_version: run.version, candidate_id: choice === 'neither' ? null : choice, answer, leave_open: leaveOpen });
+      const response = await request<{ run: Run }>(`${MONTH_END_API}/execution/continue`, { run_id: run.id, expected_version: run.version, candidate_id: choice === 'neither' ? null : choice, answer, leave_open: leaveOpen });
       if (mounted.current) setRun(response.run);
     } catch (e) { if (mounted.current) { setError((e as Error).message); setRefresh(n => n + 1); } }
     finally { submission.current = false; if (mounted.current) setPending(false); }

@@ -7,6 +7,12 @@ const { createApplication, toCsv } = require('../src/server');
 const { LocalStore } = require('../src/storage/local-store');
 
 async function json(response) { return response.json(); }
+async function localSignIn(base, email) {
+  return json(await fetch(`${base}/api/auth/local`, {
+    method: 'POST', headers: { origin: 'http://127.0.0.1:5173', 'content-type': 'application/json' },
+    body: JSON.stringify({ email }),
+  }));
+}
 
 test('authenticated upload shows agent progress, owner-scoped records, and CSV export', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tutupbuku-api-'));
@@ -30,10 +36,7 @@ test('authenticated upload shows agent progress, owner-scoped records, and CSV e
   const homepage = await fetch(base);
   assert.equal(homepage.status, 200);
   assert.match(homepage.headers.get('content-security-policy'), /frame-ancestors 'none'/);
-  const auth = await json(await fetch(`${base}/api/auth/local`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: 'owner@example.test' }),
-  }));
+  const auth = await localSignIn(base, 'owner@example.test');
   const headers = { authorization: `Bearer ${auth.accessToken}` };
 
   const disguised = await fetch(`${base}/api/documents`, {
@@ -73,10 +76,7 @@ test('authenticated upload shows agent progress, owner-scoped records, and CSV e
   assert.match(await exported.text(), /INV-1/);
   assert.equal(exported.headers.get('content-type').split(';')[0], 'text/csv');
 
-  const other = await json(await fetch(`${base}/api/auth/local`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: 'other@example.test' }),
-  }));
+  const other = await localSignIn(base, 'other@example.test');
   const privateResponse = await fetch(`${base}/api/jobs/${created.job.id}`, {
     headers: { authorization: `Bearer ${other.accessToken}` },
   });
@@ -122,7 +122,7 @@ test('automatic intake lets the Master Agent route a claim and saves the resolve
   await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  const auth = await json(await fetch(`${base}/api/auth/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'auto@example.test' }) }));
+  const auth = await localSignIn(base, 'auto@example.test');
   const headers = { authorization: `Bearer ${auth.accessToken}`, 'x-filename': 'receipt.txt', 'x-workflow': 'auto', 'x-claim-purpose': encodeURIComponent('Lunch with Company X'), 'content-type': 'text/plain' };
   const response = await fetch(`${base}/api/documents`, { method: 'POST', headers, body: 'Cafe receipt' });
   assert.equal(response.status, 201);
@@ -151,7 +151,7 @@ test('employee role is limited to own claims and cannot use reviewer or owner ac
   await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  const signIn = async (email) => json(await fetch(`${base}/api/auth/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }) }));
+  const signIn = (email) => localSignIn(base, email);
   const employee = await signIn('employee@example.test');
   const owner = await signIn('owner@example.test');
   const employeeHeaders = { authorization: `Bearer ${employee.accessToken}` };
@@ -179,7 +179,7 @@ test('master data endpoint saves a tenant chart of accounts and supplier/buyer r
   await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  const auth = await json(await fetch(`${base}/api/auth/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'accounts@example.test' }) }));
+  const auth = await localSignIn(base, 'accounts@example.test');
   const headers = { authorization: `Bearer ${auth.accessToken}`, 'content-type': 'application/json' };
   const saved = await fetch(`${base}/api/master-data`, {
     method: 'PUT', headers,
@@ -214,7 +214,7 @@ test('reviewer corrections trigger rechecks, issues need explicit resolution, an
   await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  const auth = await json(await fetch(`${base}/api/auth/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'reviewer@example.test' }) }));
+  const auth = await localSignIn(base, 'reviewer@example.test');
   const headers = { authorization: `Bearer ${auth.accessToken}`, 'content-type': 'application/json' };
   const upload = await fetch(`${base}/api/documents`, { method: 'POST', headers: { ...headers, 'x-filename': 'invoice.txt', 'x-workflow': 'purchasing' }, body: 'invoice source' });
   const { document, job } = await json(upload);

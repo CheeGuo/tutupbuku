@@ -4,7 +4,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { auditPoBalance } = require('../domain/audit');
 
 function clone(value) { return value === undefined ? undefined : structuredClone(value); }
-const CORRECTABLE_FIELDS = new Set(['type','supplierName','buyerName','merchantName','documentNumber','invoiceNumber','poNumber','documentDate','dueDate','totalAmountSen','paymentTerm','purpose','description','standardizedDescription','lines','categoryHints','accountCode','linkedPoDocumentId']);
+const CORRECTABLE_FIELDS = new Set(['type','supplierName','buyerName','merchantName','documentNumber','invoiceNumber','poNumber','documentDate','dueDate','totalAmountSen','taxAmountSen','paymentTerm','purpose','description','standardizedDescription','lines','categoryHints','accountCode','linkedPoDocumentId']);
 function emptyState() {
   return { version: 1, businesses: {}, masterData: {}, documents: {}, jobs: {}, issues: {}, events: {}, corrections: [] };
 }

@@ -2,7 +2,6 @@ import React, { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useData } from '../state/store';
 import type { Claim, DocRecord, DocType } from '../types';
-import { CHART_OF_ACCOUNTS } from '../data/dummy';
 import { TYPE_CONFIG, chainOf, claimDoc, docAmount, docDate, docNumber, docParty, fieldDisplay, linkOf, poIdOf } from '../lib/docs';
 import { formatDate, formatMoney, formatTimestamp, humanStatus } from '../lib/format';
 import { Disclosure, Empty, Segmented } from '../components/ui';
@@ -62,12 +61,15 @@ export function Documents() {
       </div>
     </header>
 
+    {data.error && <div className="notice notice-error" role="status"><div><strong>{data.connection === 'offline' ? 'Backend unavailable' : 'Workspace update'}</strong><p>{data.error}</p></div><button type="button" className="btn btn-sm" onClick={() => void data.refresh()}>Reconnect</button></div>}
+    {data.loading && <p className="hint" role="status">Loading records from the business workspace…</p>}
+
     <div className="filterbar" role="search" aria-label="Filters">
       <label className="field"><span>Date from</span><input type="date" value={from} max={to || undefined} onChange={e => set({ from: e.target.value || null })} /></label>
       <label className="field"><span>Date to</span><input type="date" value={to} min={from || undefined} onChange={e => set({ to: e.target.value || null })} /></label>
       <label className="field"><span>Category</span><select value={category} onChange={e => set({ category: e.target.value || null })}>
         <option value="">All categories</option>
-        {tab === 'purchasing' ? CATEGORIES.map(c => <option key={c} value={c}>{TYPE_CONFIG[c].label}</option>) : CHART_OF_ACCOUNTS.map(a => <option key={a.code} value={a.code}>{a.name}</option>)}
+        {tab === 'purchasing' ? CATEGORIES.map(c => <option key={c} value={c}>{TYPE_CONFIG[c].label}</option>) : data.masterData.chartOfAccounts.map(a => <option key={a.code} value={a.code}>{a.name}</option>)}
       </select></label>
       {(from || to || category) && <button type="button" className="btn btn-ghost btn-sm" onClick={() => set({ from: null, to: null, category: null })}>Clear</button>}
       <p className="hint filter-note">Dates apply to each record’s own date and also set the range of the CSV downloads above.{rangeError && <span className="error-text" role="alert"> {rangeError}</span>}</p>
@@ -75,7 +77,7 @@ export function Documents() {
 
     <div className="subhead"><Segmented<Tab> label="Record types" value={tab} onChange={v => setParams(v === 'claims' ? { tab: 'claims' } : {})}
       options={[{ value: 'purchasing', label: 'Purchasing', count: groups.length + loose.length }, { value: 'claims', label: 'Claims', count: data.claims.length }]} />
-      <span className="tag">Sample data · saved in this browser</span></div>
+      <span className="tag">Live business records</span></div>
 
     <div className={`split ${hasDetail ? 'has-detail' : ''}`}>
       <div className="split-list">
@@ -121,7 +123,7 @@ export function Documents() {
 /* ---------- read-only record views ---------- */
 
 function PoDetail({ po, chain }: { po: DocRecord; chain: DocRecord[] }) {
-  const { issues, audit } = useData();
+  const { issues, audit, masterData } = useData();
   const ids = chain.map(d => d.id);
   const open = issues.filter(i => (i.status === 'OPEN' || i.status === 'UNDER_REVIEW') && i.docIds.some(id => ids.includes(id)));
   const history = audit.filter(a => ids.includes(a.entityId));
@@ -146,8 +148,9 @@ function DocBlock({ doc, heading }: { doc: DocRecord; heading?: boolean }) {
     <span className="chain-meta">{docDate(doc) ? formatDate(docDate(doc)) : '—'}{docAmount(doc) !== null && ` · ${formatMoney(docAmount(doc)!)}`}</span>
     </>;
   const body = <div className="doc-body">
+    {doc.rawStatus && <p className="muted">Processing status: {humanStatus(doc.rawStatus)}{doc.jobId ? ` · job ${doc.jobId}` : ''}</p>}
     {doc.status === 'REJECTED' && <p className="muted">Marked as a duplicate. The record and its file are kept for the audit trail.</p>}
-    {(link || settled) && <p className="muted">{link ? (link.confirmedBy ? `Linked to the PO (${Math.round(link.confidence * 100)}%, confirmed${link.confirmedBy.includes('(') || link.confirmedBy === 'You (finance reviewer)' ? ' by you' : ''}).` : `Link proposed at ${Math.round(link.confidence * 100)}%, not yet confirmed.`) : ''}{settled ? ` Settles ${docNumber(settled)}.` : ''}</p>}
+    {(link || settled) && <p className="muted">{link ? (link.confirmedBy ? `Linked to the PO${link.confidence === undefined ? '' : ` (${Math.round(link.confidence * 100)}% confidence)`}, confirmed${link.confirmedBy.includes('(') || link.confirmedBy === 'You (finance reviewer)' ? ' by you' : ''}.` : link.confidence === undefined ? 'A PO link is proposed; confidence was not supplied, and the link is not confirmed.' : `Link proposed at ${Math.round(link.confidence * 100)}%, not yet confirmed.`) : ''}{settled ? ` Settles ${docNumber(settled)}.` : ''}</p>}
     {doc.fields.length > 0 && <dl className="kv">{doc.fields.map(f => <div key={f.key}><dt>{f.label}</dt><dd>{fieldDisplay(f)}{f.confidence !== undefined && f.confidence < 0.7 && <span className="conf low">uncertain</span>}</dd></div>)}</dl>}
     {doc.lines.length > 0 && <div className="table-wrap"><table className="table"><thead><tr><th>Item</th><th className="num">Qty</th>{doc.docType !== 'delivery_order' && <><th className="num">Unit price</th><th className="num">Total</th></>}</tr></thead>
       <tbody>{doc.lines.map(l => <tr key={l.id}><td>{l.description}</td><td className="num">{l.quantity}</td>{doc.docType !== 'delivery_order' && <><td className="num">{l.unitSen === null ? '—' : formatMoney(l.unitSen)}</td><td className="num">{l.totalSen === null ? '—' : formatMoney(l.totalSen)}</td></>}</tr>)}</tbody></table></div>}
@@ -158,10 +161,10 @@ function DocBlock({ doc, heading }: { doc: DocRecord; heading?: boolean }) {
 }
 
 function ClaimDetail({ claim }: { claim: Claim }) {
-  const { docs, issues } = useData();
+  const { docs, issues, masterData } = useData();
   const receipt = claimDoc(claim, docs);
   const related = issues.filter(i => i.claimId === claim.id && (i.status === 'OPEN' || i.status === 'UNDER_REVIEW'));
-  const account = CHART_OF_ACCOUNTS.find(a => a.code === claim.categoryCode);
+  const account = masterData.chartOfAccounts.find(a => a.code === claim.categoryCode);
   return <article className="detail" aria-label={`Claim ${claim.id}`}>
     <header className="detail-head"><div><span className="eyebrow">Claim · {claim.employee} · {claim.id}</span><h2>{receipt ? docParty(receipt) : claim.id}</h2></div><span className="status-text">{claimLabel(claim)}</span></header>
     {receipt && <Facts items={[['Expense date', formatDate(docDate(receipt))], ['Amount', formatMoney(docAmount(receipt) ?? 0)], ['Receipt reference', docNumber(receipt)], ['Account', account ? `${account.code} · ${account.name}` : 'Not chosen']]} />}

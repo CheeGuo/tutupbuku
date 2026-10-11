@@ -1,81 +1,230 @@
-# TutupBuku Agentic Document Intake
+# TutupBuku
 
-TutupBuku accepts purchasing documents and employee claim receipts, extracts evidence, runs bounded parallel checks, and saves a reviewable proposal. It does not post transactions to accounting software. A person resolves findings and approves each record.
+**Evidence-linked purchasing and employee-claim review for SMEs.**
 
-## What is implemented
+TutupBuku helps small businesses turn uploaded invoices, purchase orders, receipts, and employee claims into reviewable records. It extracts document evidence, checks related records, highlights exceptions, and keeps human decisions alongside the source documents.
 
-- Automatic Master Agent routing into purchasing or employee claims; operators can also select a workflow manually. Purchasing intake supports quotations, purchase orders, delivery orders, invoices, payment advice, and receipts. Later documents can be linked to an existing PO even when uploads arrive out of order.
-- Supplier and buyer identity checks, missing-step and duplicate checks, unit-price comparisons, and cumulative PO amount/quantity guards. Partial invoices are allowed; combined consumption above the PO is held for review.
-- Claims intake with purpose verification. A fuel receipt paired with a lunch purpose is flagged and held before category recommendation or description writing.
-- Three independent parallel account-category recommendations, limited to active codes from the configured business chart of accounts.
-- Source references, human corrections, issue resolutions, approval events, business scoping, duplicate detection, progress events, and CSV export.
-- Nine executable role skills loaded from `./skills`.
-- Local JSON storage for development; Supabase Auth, Postgres, and private Storage for production. AWS ECS packaging is included.
+The current application combines a React review workspace with a Node.js backend. AI proposes document fields and accounting categories; application code validates the proposals, and a reviewer decides what to approve. Approved records can be exported as CSV for downstream review.
 
-The agents propose and explain. Application code checks required values, arithmetic, master data, PO balances, approval state, and tenant access. Agent processing never approves a document.
+**Status:** development prototype. This repository also contains a separate Python month-end review-pack prototype. Live AI providers, cloud deployment, and the complete browser workflow need validation in your environment.
 
-## Run locally
+## Features
 
-Requires Node.js 22 or newer. The app uses Node built-ins and does not require npm packages.
+- **Purchasing review:** quotations, purchase orders, delivery orders, invoices, payment advice, and payment receipts.
+- **Employee claims:** receipt review against the stated business purpose, with account-category suggestions when the evidence and company chart of accounts support them.
+- **Evidence and checks:** source references, duplicate detection, required-field and arithmetic checks, purchase-order matching, unit-price comparisons, and cumulative PO quantity and amount checks.
+- **Human review:** visible findings, corrections with reasons, reprocessing, rejection, and explicit approval.
+- **Progress tracking:** processing jobs and agent progress events.
+- **Business workspaces:** owner, reviewer, and employee roles, with business-scoped records.
+- **Exports:** document and issue CSVs, plus approved purchasing and claim exports.
 
-Start the API from the repository root:
+Supplier and buyer checks compare documents with the company reference data supplied to TutupBuku. They do not establish that a business has been verified against an external registry.
 
-```powershell
-Copy-Item .env.example .env
-node --env-file=.env src/server.js
+## How the review works
+
+```text
+Upload source document
+        |
+Route to purchasing or employee claims
+        |
+Extract fields and source references
+        |
+Run agent checks and deterministic validation
+        |
+Save a proposal and any review findings
+        |
+Human review, corrections, and approval
+        |
+Export approved records as CSV
 ```
 
-In a second terminal, run the frontend:
+The Node workflow loads nine role instructions from [skills/](skills/). Purchasing checks can run supplier verification, buyer verification, and PO matching concurrently. Eligible claims receive three independent category suggestions from different perspectives.
+
+These roles use the same configured model endpoint. Their concurrency is bounded, and category recommendations must use active codes from the company's chart of accounts. Missing evidence, disagreements, and invalid proposals remain visible for review.
+
+Agent processing never approves a record. Approval requires completed analysis for the current record version and resolved findings.
+
+## Local development
+
+### Requirements
+
+- **Node.js 22 or newer** for the backend.
+- **npm** for installing and running the frontend.
+- **Poppler and Tesseract**, available on `PATH`, if you want PDF or image extraction.
+- A compatible AI endpoint for document analysis. You can start the services without one; uploaded documents will remain `needs_configuration`.
+
+The Node backend uses built-in modules and has no third-party npm dependencies. The frontend has its own dependencies in [frontend/package.json](frontend/package.json).
+
+### 1. Get the repository and configure the backend
+
+For a fresh checkout:
+
+```powershell
+git clone https://github.com/CheeGuo/tutupbuku.git
+Set-Location tutupbuku
+```
+
+From the repository root, create the local environment file if it does not already exist:
+
+```powershell
+if (-not (Test-Path .env)) {
+    Copy-Item .env.example .env
+}
+```
+
+Edit `.env` and use these values for a local backend:
+
+```dotenv
+NODE_ENV=development
+HOST=127.0.0.1
+PORT=3000
+NGROK_URL=
+```
+
+**Clear the example `NGROK_URL` for local development.** A nonempty value makes Vite proxy requests to that URL. The placeholder in [.env.example](.env.example) is not a running backend.
+
+Replace the example `APP_SECRET` with a generated value:
+
+```powershell
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+```
+
+Keep the value in your local `.env`. Configure `AI_BASE_URL` and `AI_MODEL` when you are ready to enable agent processing.
+
+### 2. Start the backend
+
+From the repository root:
+
+```powershell
+node --env-file-if-exists=.env src/server.js
+```
+
+The backend defaults to port `3000`. Its health endpoint is [http://127.0.0.1:3000/api/health](http://127.0.0.1:3000/api/health).
+
+### 3. Start the frontend
+
+In a second terminal, from the repository root:
 
 ```powershell
 Set-Location frontend
-npm install
+npm ci
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` to the Node service on port 3000. To serve the app from port 3000, build it with `npm run build` from `frontend` first. Local development sign-in asks only for an email and is not suitable for a shared or public deployment. Local data is written to `.tutupbuku-data/state.json` and `.tutupbuku-data/uploads/`; other existing files in that folder are left alone. This directory is ignored by Git.
+Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` to the Node backend.
 
-CSV, TSV, and text files work without system OCR tools. PDF and image OCR requires Poppler and Tesseract. Set `OCR_LANGUAGES=eng+msa` when Malay trained data is installed; the Docker image includes English and Malay language data and uses both by default.
+Development sign-in uses an email address to create a local owner workspace. Company reference data starts empty: configure the buyer profile, suppliers, and chart of accounts through the owner master-data API before relying on those checks. See [src/server.js](src/server.js) for `GET /api/master-data` and `PUT /api/master-data`.
 
-Set `AI_BASE_URL` and `AI_MODEL` to enable agent calls. `AI_API_KEY` is optional for an endpoint that does not require a key. The provider must accept OpenAI-compatible `/chat/completions` requests and structured JSON output. Without a configured endpoint, uploads are saved but remain `needs_configuration`; they are not marked analyzed.
+Local authentication is restricted to the Vite development origins. The current browser integration still needs verification; see the known limitations below.
 
-The accounting workflow adapter does not connect to WorkBuddy desktop credit balances. Use only a documented API endpoint you are authorized to call. A local Ollama-compatible endpoint can be used without buying hosted model credits, subject to your laptop's capacity. If you tunnel a local server with ngrok for development, keep the URL private, require authentication, and do not treat the tunnel as production hosting.
+### 4. Review a document
 
-## Test the website connection to CodeBuddy on AWS
+1. Upload a purchasing document or a claim receipt with its business purpose.
+2. Inspect the processing status and extracted record in **Documents**.
+3. Review findings in **Action Items**, record corrections or decisions, and reprocess when needed.
+4. Approve eligible records and download the approved CSV export.
 
-A separate HTML page provides a **Run AWS agent test** button. Its authenticated backend sends one fixed request through the documented CodeBuddy CLI HTTP API and displays a confirmed final `AWS_BUDDY_OK` reply. Page loading and status checks do not call the model. The CodeBuddy gateway password stays on the backend; browser access uses a different operator password.
+The browser upload control currently accepts PDFs and supported images. The backend API also accepts CSV, TSV, and text files.
 
-See [Ubuntu/AWS connection demo setup](docs/agent-connection-demo.md) for exact commands. The demo runs on port 3001, with a dedicated tool-free CodeBuddy gateway on loopback port 8081 and an ngrok HTTPS endpoint. It uses the existing CLI account login rather than a separate model API key. Its purpose is to test the connection; it does not connect the accounting workflows or demonstrate parallel agents. Existing accounting permissions and approval behavior are unchanged.
+## Configuration
 
-Live AWS, public HTTPS, and credit consumption through this new button still require verification on your VM. Automated tests use a mock gateway and do not spend credits.
+Backend settings are loaded from the root `.env` file.
 
-## Check the implementation
+| Setting | Purpose |
+| --- | --- |
+| `NODE_ENV`, `HOST`, `PORT` | Runtime mode and backend listening address. |
+| `APP_SECRET` | Signs local development sessions. |
+| `DATA_DIR` | Local storage directory; defaults to `.tutupbuku-data`. |
+| `AI_BASE_URL`, `AI_MODEL` | Required to enable Node agent processing. The provider must accept `/chat/completions` requests with JSON output. |
+| `AI_API_KEY` | Provider credential, when the endpoint requires one. |
+| `AI_TIMEOUT_MS` | Model-request timeout; example value is `45000`. |
+| `MAX_PARALLEL_JOBS` | Concurrent document jobs; default is `2`. |
+| `OCR_LANGUAGES` | Tesseract language selection; defaults to `eng`. Use `eng+msa` only when both trained-language datasets are installed. |
+| `NGROK_URL` | Backend tunnel origin used by the frontend configuration. Leave empty for local Node development. |
+| `TUTUPBUKU_DEV_PROXY_SECRET` | Shared backend/Vite secret for local development through a tunnel. |
+| `TUTUPBUKU_ALLOWED_ORIGINS` | Comma-separated frontend origins allowed to call a deployed backend. |
+| `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` | Supabase authentication and persistent storage settings. Required by production mode. |
+
+For a separately deployed frontend, set `VITE_API_BASE_URL` to the backend HTTPS origin. The current frontend production build requires `NGROK_URL` or `VITE_API_BASE_URL` to be set. Register the frontend's exact origin in the backend's `TUTUPBUKU_ALLOWED_ORIGINS`.
+
+Keep AI credentials, the Supabase service-role key, and proxy secrets on the backend. Use Supabase authentication for public deployments; development email sign-in is intended for private local use.
+
+See [frontend/README.md](frontend/README.md) for frontend configuration and build details.
+
+## Storage and access
+
+Local development stores application state in `.tutupbuku-data/state.json` and source uploads in `.tutupbuku-data/uploads/`. This directory is ignored by Git.
+
+The production storage adapter uses Supabase Auth, Postgres, and private document storage. Apply these migrations in order:
+
+1. [001_agentic_intake.sql](supabase/migrations/001_agentic_intake.sql)
+2. [002_review_and_versioning.sql](supabase/migrations/002_review_and_versioning.sql)
+
+| Role | Access |
+| --- | --- |
+| Owner | Manage company reference data, review records, and approve documents. |
+| Reviewer | Review records, resolve findings, and approve documents. |
+| Employee | Upload and view their own claims. |
+
+Production memberships are maintained in `public.business_memberships`; an invitation or membership-management screen is not implemented.
+
+## Separate month-end prototype
+
+The [tutupbuku/](tutupbuku/) Python package implements a separate bank-statement and sales-matching workflow. It uses integer-sen arithmetic, conservative matching, operator decisions, and a five-file review pack:
+
+```text
+01_proposals.csv
+02_exceptions.md
+03_records_summary.md
+04_decisions_log.csv
+05_manifest.csv
+```
+
+It requires Python 3.12 and prepared case data. The frontend's `/month-end-api` proxy targets this service on port `8765`. The expected `fixtures/` and `demo-fixtures/` directories are absent from this checkout, so the Python demo is not ready to run from a fresh clone.
+
+WorkBuddy/CodeBuddy gateway and MCP integration code belongs to this separate workflow. The Node document pipeline uses its configured AI HTTP provider; it does not automatically use desktop WorkBuddy credits.
+
+## Repository structure
+
+```text
+frontend/               React + TypeScript review workspace
+src/server.js           Node HTTP API and frontend bundle serving
+src/processor.js        Extraction and validated document proposals
+src/agents/             Role loading and agent execution
+src/workflow/           Workflow orchestration and concurrency
+src/domain/             Schemas and deterministic accounting checks
+src/ingest/             Tabular parsing and OCR adapters
+src/storage/            Local and Supabase persistence
+skills/                 Nine agent-role instructions and shared contract
+tutupbuku/              Separate Python month-end and MCP prototype
+test/                   Node tests
+tests/                  Python tests
+supabase/migrations/    Database schema and access policies
+infra/aws/              AWS deployment preparation notes
+```
+
+There is also a separate React source copy under root `src/`. Use `frontend/` for the documented development and build commands.
+
+## Checks and current limitations
+
+The root test command is:
 
 ```powershell
 node --test
-$files = Get-ChildItem -Path src,public,scripts,test -Recurse -Filter *.js
-foreach ($file in $files) { node --check $file.FullName; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
-node scripts/smoke.js
 ```
 
-These commands work without installing npm packages. The smoke test uses temporary local storage, makes no model/network-provider call, uploads a text fixture, and verifies that missing AI configuration remains visible. It removes only its own temporary directory. Convenience npm scripts are also provided if the npm CLI is installed correctly.
+This README is based on source inspection; it does not establish that the complete test suite or live integrations pass.
 
-## Production setup
+Known limitations in the current checkout:
 
-Production requires `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`. The service-role key stays server-side and must be stored as a Secrets Manager secret in ECS. Apply `supabase/migrations/001_agentic_intake.sql` and then `supabase/migrations/002_review_and_versioning.sql` to a new Supabase project before starting the service; review the migrations and backup policy with your database owner. Create a Supabase Auth user or enable permitted email signup. See [AWS deployment notes](infra/aws/README.md).
+- Some test and npm script paths reference missing `public/` or `src/agent-demo/` files. The full test suite and older agent-demo instructions need reconciliation with the current layout.
+- The Dockerfile also references the absent `public/` directory and does not package `frontend/dist/`. [AWS deployment notes](infra/aws/README.md) are preparation material and need updating before use with this frontend.
+- Local authentication checks request origins. Browser requests through the development proxy need end-to-end validation; serving a built frontend on port `3000` alone is not a verified local sign-in setup.
+- The frontend retains calls to the separate Python review service; that section requires its own service and case data.
+- Uploads are limited to **15 MiB**. PDF extraction reads up to **30 pages**, and other extraction/context limits apply. Review truncation findings and the original source.
+- OCR and AI output can be incomplete or incorrect. Human review remains required.
+- TutupBuku prepares proposals and review exports. It does not post to an accounting system, execute payments, complete an accounting close, or issue tax or e-invoice compliance decisions.
 
-Membership roles are `owner`, `reviewer`, and `employee`. An employee can upload and see only their own claims; a reviewer or owner can resolve findings and approve. Only owners can edit company reference data. To add a registered Supabase Auth user, a project administrator must insert that user's Auth UUID and the target business UUID into `public.business_memberships` with the chosen role. Membership administration/invitations are not exposed in the app yet. Local development sign-in creates isolated owner-only workspaces.
+## License
 
-After creating the user in Supabase Auth, get both UUIDs from the Supabase dashboard, then run this reviewed SQL in the project SQL editor:
-
-```sql
-insert into public.business_memberships (business_id, user_id, role)
-values ('<business-uuid>', '<auth-user-uuid>', 'employee')
-on conflict (business_id, user_id) do update set role = excluded.role;
-```
-
-The Supabase migration has been authored but not applied or tested against a live project in this workspace. Likewise, no AWS resources have been created by this implementation. Provide the AI endpoint/model/key as environment configuration or ECS secrets if you want cloud-model processing; that can incur provider charges. The production accounting workflow does not currently provide a WorkBuddy-credits API bridge; the separate connection demo above is limited to one fixed test request.
-
-## Data and operational limits
-
-Uploads are capped at 15 MiB. PDF text extraction checks up to 30 pages; OCR content truncation creates a review finding. The service records originals and derived data in private storage and tenant-scoped tables. Configure Supabase backups, retention, region, access controls, and production monitoring before using real accounting records. Exports are CSV drafts for downstream review, not approved journal postings.
+Licensed under the [Apache License 2.0](LICENSE).

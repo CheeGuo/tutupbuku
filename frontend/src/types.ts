@@ -1,7 +1,7 @@
 /* ============================================================
    TutupBuku domain types (see TutupBuku_Project_Context.md §8–9).
    Money is integer sen. Dates are date-only ISO strings.
-   Documents / Issues pages run on DUMMY data until a backend exists.
+   Frontend view models projected from the authenticated backend API.
    ============================================================ */
 
 export type DocType =
@@ -18,13 +18,14 @@ export interface Field {
   kind: FieldKind;
   value: string;      // text / ISO date; money fields keep their display-free decimal in `sen`
   sen?: number;
-  confidence?: number; // 0..1 from the (dummy) Docs Agent
+  confidence?: number;
+  provenance?: Record<string, unknown>[];
 }
 
 export interface LineItem {
   id: string;
   description: string;
-  quantity: number;
+  quantity: number | null;
   unitSen: number | null;
   totalSen: number | null;
 }
@@ -42,6 +43,12 @@ export interface DocRecord {
   uploadedAt: string;
   uploadedBy: string;
   note?: string;
+  rawStatus?: string;
+  jobId?: string;
+  inputVersion?: number;
+  analysisVersion?: number;
+  purpose?: string;
+  sourceReferences?: Record<string, unknown>[];
 }
 
 export type LinkState = 'confirmed' | 'proposed';
@@ -52,7 +59,7 @@ export interface DocLink {
   sourceId: string;
   targetId: string;          // the PO document (or an invoice, for payments)
   relationship: 'for_po' | 'settles_invoice';
-  confidence: number;
+  confidence?: number;
   confirmedBy: string | null;
 }
 
@@ -67,7 +74,7 @@ export interface Claim {
   receiptDocId: string;
   employeePurpose: string;
   categoryCode: string | null;
-  categoryConfidence: number;
+  categoryConfidence: number | null;
   categoryReasoning: string;
   alternativeCodes: string[];
   standardizedDescription: string;
