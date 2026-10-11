@@ -4,6 +4,7 @@
 Run: python3 test_workbuddy.py
 Or:  python3 test_workbuddy.py "Say hello in one sentence."
 Uses only Python's standard library. Each run makes one AI request.
+Prints raw server output (run response + every stream line).
 """
 
 import argparse
@@ -87,7 +88,9 @@ def run_test(prompt, timeout):
     )
     deadline = time.monotonic() + timeout
     with opener.open(request, timeout=timeout) as response:
-        accepted = json.load(response).get("data", {})
+        raw_body = response.read().decode("utf-8")
+    print("RAW RUN RESPONSE:\n" + raw_body, flush=True)
+    accepted = json.loads(raw_body).get("data", {})
     run_id = accepted.get("runId")
     if accepted.get("status") != "accepted" or not run_id:
         raise RuntimeError("The gateway did not accept an AI run.")
@@ -96,12 +99,12 @@ def run_test(prompt, timeout):
     stream_url = base + "/api/v1/runs/" + urllib.parse.quote(run_id, safe="") + "/stream"
     request = urllib.request.Request(stream_url, headers=headers)
     with opener.open(request, timeout=max(1, deadline - time.monotonic())) as response:
-        print("RAW RUN RESPONSE:\n" + raw_body, flush=True)
         if "text/event-stream" not in response.headers.get("Content-Type", ""):
             raise RuntimeError("The gateway did not return an AI event stream.")
         event, data, received = "message", [], 0
         for raw_line in response:
             received += len(raw_line)
+            print("RAW:", raw_line.decode("utf-8", "replace").rstrip("\r\n"), flush=True)
             if received > 262144 or time.monotonic() > deadline:
                 raise RuntimeError("The AI test exceeded its size or time limit.")
             line = raw_line.decode("utf-8").rstrip("\r\n")
