@@ -55,6 +55,6 @@ export function ChatMessage({ msg, onChoose }: { msg: Msg; onChoose: (msgId: str
     {msg.hash && <a href={`#${msg.hash}`} onClick={e => { e.preventDefault(); document.getElementById(msg.hash!)?.scrollIntoView({ block: 'center' }); }}>{msg.action} →</a>}</div></div>;
   if (msg.kind === 'quick') return <div className="msg msg-agent"><span className="avatar" aria-hidden="true" /><div className="bubble"><p>What are you sending?</p>
     <div className="hero-actions left">{msg.options.map(o => <button key={o.id} type="button" className="chip" disabled={msg.used} onClick={() => onChoose(msg.id, o.id)}>{o.label}</button>)}</div></div></div>;
-  if (msg.kind === 'steps') return <div className="msg msg-agent"><span className="avatar" aria-hidden="true" /><ol className="steps-card" aria-live="polite">{msg.steps.map(s => <li key={s.label} className={s.state}><span className="step-mark">{s.state === 'done' ? '✓' : s.state === 'failed' ? '!' : ''}</span>{s.label}</li>)}</ol></div>;
+  if (msg.kind === 'steps') return <div className="msg msg-agent"><span className="avatar" aria-hidden="true" /><ol className="steps-card" aria-live="polite">{msg.steps.map(s => <li key={s.label} className={s.state}><span className="step-mark">{s.state === 'done' ? '✓' : s.state === 'running' ? '' : ''}</span>{s.label}</li>)}</ol></div>;
   return <div className="msg msg-agent"><span className="avatar" aria-hidden="true" /><div className="bubble wide"><CardView card={msg.card} /></div></div>;
 }

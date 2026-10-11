@@ -1,7 +1,7 @@
 import React from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
+import { useExecution } from '../lib/execution';
 import { useData } from '../state/store';
-import { useAuth } from '../state/auth';
 import { Toasts } from '../components/ui';
 import logo from '../assets/tutupbuku-logo.png';
 
@@ -12,9 +12,8 @@ const NAV = [
 ];
 
 export function AppShell() {
-  const { issues, claims, loading, loadError, refreshRecords, role } = useData();
-  const auth = useAuth();
-  const connection = loadError ? 'offline' : loading ? 'checking' : 'connected';
+  const { connection } = useExecution();
+  const { issues, claims } = useData();
   const open = issues.filter(i => i.status === 'OPEN' || i.status === 'UNDER_REVIEW').length + claims.filter(c => c.status === 'PLAUSIBLE' || c.status === 'NEEDS_REVIEW').length;
   return <div className="shell">
     <a className="skip-link" href="#content">Skip to content</a>
@@ -25,13 +24,11 @@ export function AppShell() {
           {item.label}{item.to === '/issues' && open > 0 && <span className="nav-count" aria-label={`${open} items need action`}>{open}</span>}
         </NavLink>)}
       </nav>
-      <div className={`conn conn-${connection}`} role="status" title="Workspace data service">
+      <div className={`conn conn-${connection}`} role="status" title="Month-end review service">
         <span className="conn-dot" aria-hidden="true" />
-        <span className="conn-text">{connection === 'connected' ? 'Workspace connected' : connection === 'checking' ? 'Loading records…' : 'Workspace unavailable'}</span>
+        <span className="conn-text">{connection === 'connected' ? 'Review service connected' : connection === 'checking' ? 'Connecting…' : 'Review service offline'}</span>
       </div>
-      <div className="topbar-account"><span>{role}</span><button type="button" className="btn btn-ghost btn-sm" onClick={auth.signOut}>Sign out</button></div>
     </header>
-    {loadError && <div className="service-banner" role="alert"><span>{loadError}</span><button type="button" className="btn btn-sm" onClick={() => void refreshRecords().catch(() => {})}>Retry</button></div>}
     <main id="content" className="content" tabIndex={-1}><Outlet /></main>
     <Toasts />
   </div>;

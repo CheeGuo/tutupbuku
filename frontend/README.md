@@ -1,34 +1,27 @@
 # TutupBuku frontend
 
-This React + TypeScript app is the authenticated browser client for the Node service in `../src`. It uses same-origin `/api` routes for uploads, processing jobs, purchasing records, claims, issues, source files, review decisions, and approved CSV exports.
+React + TypeScript (Vite). Three pages, following `TutupBuku_Project_Context.md`:
 
-The agent skill files live in `../skills`. The server loads those skills during document processing; the frontend uploads each file to the service, follows the persisted job events, and displays the saved findings and review actions. Corrections include a reviewer reason and start a new check. The app does not approve documents automatically.
+| Page | Route | Data |
+| --- | --- | --- |
+| Agentic Live Execution | `/` | **Live** — Python service (`/api/execution`, `/api/cases`, `/api/exports/*`). The orbit follows the real stage state. |
+| Documents | `/documents` | **Dummy** purchasing chains and claims (`src/data/dummy.ts`), plus **live** case source files (`Live case files` tab). |
+| Issues | `/issues` | **Dummy** issues (`INFO` / `WARNING` / `HIGH`, `OPEN → UNDER_REVIEW → RESOLVED \| DISMISSED`), plus **live** run issues (`Live run` tab). |
 
-## Run locally
+The backend currently implements the month-end bank-matching workflow only. Purchasing and claims screens run on
+session-only dummy data (state in `src/state/store.tsx`, reset on reload) and are labelled "Sample data" in the UI.
 
-Start the API from the repository root:
+## Run
 
-```powershell
-Copy-Item .env.example .env
-node --env-file=.env src/server.js
-```
-
-In a second terminal, run the frontend:
-
-```powershell
-Set-Location frontend
+```bash
 npm install
-npm run dev
+npm run build                                  # type-check + production build to dist/
+python -m tutupbuku.app --frontend --web-only  # from the repo root; serves dist/ and /api on :8765
+npm run dev                                    # Vite on :5173, proxying /api to :8765
 ```
 
-Vite serves the app on port 5173 and proxies `/api` to the Node service on port 3000. Local sign-in is for development only. The service stores development records under the ignored `.tutupbuku-data` directory.
+## Orbit
 
-## Production build
-
-```powershell
-Set-Location frontend
-npm install
-npm run build
-```
-
-The Node service serves `frontend/dist` when it exists. Build the frontend before packaging or deploying the service. Supabase deployments also need both SQL migrations from `../supabase/migrations`, applied in order; see the root README for production configuration.
+`src/components/Orbit.tsx` ports the canvas orbit from `orbitanimation.html` (3D-rotated ellipses, perspective
+projection, mouse parallax, depth-sorted nodes). Speed follows the run state; it pauses when offscreen or hidden and
+renders one still frame under `prefers-reduced-motion`.

@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useData } from '../state/store';
 import type { Claim, DocRecord, DocType } from '../types';
+import { CHART_OF_ACCOUNTS } from '../data/dummy';
 import { TYPE_CONFIG, chainOf, claimDoc, docAmount, docDate, docNumber, docParty, fieldDisplay, linkOf, poIdOf } from '../lib/docs';
 import { formatDate, formatMoney, formatTimestamp, humanStatus } from '../lib/format';
 import { Disclosure, Empty, Segmented } from '../components/ui';
@@ -66,7 +67,7 @@ export function Documents() {
       <label className="field"><span>Date to</span><input type="date" value={to} min={from || undefined} onChange={e => set({ to: e.target.value || null })} /></label>
       <label className="field"><span>Category</span><select value={category} onChange={e => set({ category: e.target.value || null })}>
         <option value="">All categories</option>
-        {tab === 'purchasing' ? CATEGORIES.map(c => <option key={c} value={c}>{TYPE_CONFIG[c].label}</option>) : data.masterData.chartOfAccounts.filter(a => a.active !== false).map(a => <option key={a.code} value={a.code}>{a.label || a.name || a.code}</option>)}
+        {tab === 'purchasing' ? CATEGORIES.map(c => <option key={c} value={c}>{TYPE_CONFIG[c].label}</option>) : CHART_OF_ACCOUNTS.map(a => <option key={a.code} value={a.code}>{a.name}</option>)}
       </select></label>
       {(from || to || category) && <button type="button" className="btn btn-ghost btn-sm" onClick={() => set({ from: null, to: null, category: null })}>Clear</button>}
       <p className="hint filter-note">Dates apply to each record’s own date and also set the range of the CSV downloads above.{rangeError && <span className="error-text" role="alert"> {rangeError}</span>}</p>
@@ -74,13 +75,10 @@ export function Documents() {
 
     <div className="subhead"><Segmented<Tab> label="Record types" value={tab} onChange={v => setParams(v === 'claims' ? { tab: 'claims' } : {})}
       options={[{ value: 'purchasing', label: 'Purchasing', count: groups.length + loose.length }, { value: 'claims', label: 'Claims', count: data.claims.length }]} />
-    </div>
-
-    {data.loadError && <div className="service-banner" role="alert"><span>{data.loadError}</span><button type="button" className="btn btn-sm" onClick={() => void data.refreshRecords().catch(() => {})}>Retry</button></div>}
+      <span className="tag">Sample data · saved in this browser</span></div>
 
     <div className={`split ${hasDetail ? 'has-detail' : ''}`}>
       <div className="split-list">
-        {data.loading && data.docs.length === 0 && <p className="notice" role="status">Loading saved records…</p>}
         {tab === 'purchasing' ? <>
           {shownGroups.map(({ po, children }) => <section key={po.id} className="po-group" aria-label={`${docNumber(po)} and related documents`}>
             <button type="button" className={`row po-row ${rowOn(po.id) ? 'on' : ''}`} onClick={() => set({ doc: po.id })} aria-pressed={rowOn(po.id)}>
@@ -96,7 +94,7 @@ export function Documents() {
             <ul className="po-children flat">{loose.map(d => <li key={d.id}><button type="button" className={`row child-row ${rowOn(d.id) ? 'on' : ''}`} onClick={() => set({ doc: d.id })} aria-pressed={rowOn(d.id)}>
               <span className="row-main"><strong>{docNumber(d)}</strong><span className="row-type">{TYPE_CONFIG[d.docType].label}</span></span>
               <span className="row-sub">{docParty(d)}<span className="dotsep" aria-hidden="true">·</span>{docDate(d) ? formatDate(docDate(d)) : '—'}</span></button></li>)}</ul></section>}
-          {!shownGroups.length && !loose.length && !data.loading && !data.loadError && <Empty title={groups.length ? 'No records match' : 'No purchase orders yet'}>{groups.length ? 'Adjust the dates or category.' : 'Process a purchase order in Live Execution and it will appear here.'}</Empty>}
+          {!shownGroups.length && !loose.length && <Empty title={groups.length ? 'No records match' : 'No purchase orders yet'}>{groups.length ? 'Adjust the dates or category.' : 'Process a purchase order in Live Execution and it will appear here.'}</Empty>}
         </> : <>
           {claimGroups.map(g => <section key={g.key} className="group" aria-label={`${humanStatus(g.key)} claims`}>
             <h3><span>{g.key === 'APPROVED' ? 'Approved' : g.key === 'PENDING' ? 'Pending' : 'Rejected'}</span><small>{g.items.length}</small></h3>
@@ -104,7 +102,7 @@ export function Documents() {
               <span className="row-main"><strong>{r && docParty(r) ? docParty(r) : c.id}</strong><span className="row-type">{c.employee}</span></span>
               <span className="row-sub">{r && docDate(r) ? formatDate(docDate(r)) : '—'}{r && docAmount(r) !== null && <><span className="dotsep" aria-hidden="true">·</span>{formatMoney(docAmount(r)!)}</>}</span>
               <span className="row-status">{claimLabel(c)}</span></button>; })}
-            {!g.items.length && !data.loading && !data.loadError && <p className="muted pad">None.</p>}
+            {!g.items.length && <p className="muted pad">None.</p>}
           </section>)}
         </>}
       </div>
@@ -140,7 +138,6 @@ function PoDetail({ po, chain }: { po: DocRecord; chain: DocRecord[] }) {
 function DocBlock({ doc, heading }: { doc: DocRecord; heading?: boolean }) {
   const { links, docs } = useData();
   const link = linkOf(doc.id, links);
-  const linkConfidence = link?.confidence == null ? '' : `${Math.round(link.confidence * 100)}%`;
   const settles = links.find(l => l.sourceId === doc.id && l.relationship === 'settles_invoice');
   const settled = settles && docs.find(d => d.id === settles.targetId);
   const cfg = TYPE_CONFIG[doc.docType];
@@ -150,7 +147,7 @@ function DocBlock({ doc, heading }: { doc: DocRecord; heading?: boolean }) {
     </>;
   const body = <div className="doc-body">
     {doc.status === 'REJECTED' && <p className="muted">Marked as a duplicate. The record and its file are kept for the audit trail.</p>}
-    {(link || settled) && <p className="muted">{link ? (link.confirmedBy ? `Linked to the PO${linkConfidence ? ` (${linkConfidence})` : ''}, confirmed${link.confirmedBy.includes('(') || link.confirmedBy === 'You (finance reviewer)' ? ' by you' : ''}.` : `Link proposed${linkConfidence ? ` at ${linkConfidence}` : ''}, not yet confirmed.`) : ''}{settled ? ` Settles ${docNumber(settled)}.` : ''}</p>}
+    {(link || settled) && <p className="muted">{link ? (link.confirmedBy ? `Linked to the PO (${Math.round(link.confidence * 100)}%, confirmed${link.confirmedBy.includes('(') || link.confirmedBy === 'You (finance reviewer)' ? ' by you' : ''}).` : `Link proposed at ${Math.round(link.confidence * 100)}%, not yet confirmed.`) : ''}{settled ? ` Settles ${docNumber(settled)}.` : ''}</p>}
     {doc.fields.length > 0 && <dl className="kv">{doc.fields.map(f => <div key={f.key}><dt>{f.label}</dt><dd>{fieldDisplay(f)}{f.confidence !== undefined && f.confidence < 0.7 && <span className="conf low">uncertain</span>}</dd></div>)}</dl>}
     {doc.lines.length > 0 && <div className="table-wrap"><table className="table"><thead><tr><th>Item</th><th className="num">Qty</th>{doc.docType !== 'delivery_order' && <><th className="num">Unit price</th><th className="num">Total</th></>}</tr></thead>
       <tbody>{doc.lines.map(l => <tr key={l.id}><td>{l.description}</td><td className="num">{l.quantity}</td>{doc.docType !== 'delivery_order' && <><td className="num">{l.unitSen === null ? '—' : formatMoney(l.unitSen)}</td><td className="num">{l.totalSen === null ? '—' : formatMoney(l.totalSen)}</td></>}</tr>)}</tbody></table></div>}
@@ -161,13 +158,13 @@ function DocBlock({ doc, heading }: { doc: DocRecord; heading?: boolean }) {
 }
 
 function ClaimDetail({ claim }: { claim: Claim }) {
-  const { docs, issues, masterData } = useData();
+  const { docs, issues } = useData();
   const receipt = claimDoc(claim, docs);
   const related = issues.filter(i => i.claimId === claim.id && (i.status === 'OPEN' || i.status === 'UNDER_REVIEW'));
-  const account = masterData.chartOfAccounts.find(a => a.code === claim.categoryCode);
+  const account = CHART_OF_ACCOUNTS.find(a => a.code === claim.categoryCode);
   return <article className="detail" aria-label={`Claim ${claim.id}`}>
     <header className="detail-head"><div><span className="eyebrow">Claim · {claim.employee} · {claim.id}</span><h2>{receipt ? docParty(receipt) : claim.id}</h2></div><span className="status-text">{claimLabel(claim)}</span></header>
-    {receipt && <Facts items={[['Expense date', formatDate(docDate(receipt))], ['Amount', formatMoney(docAmount(receipt) ?? 0)], ['Receipt reference', docNumber(receipt)], ['Account', account ? `${account.code} · ${account.label || account.name || account.code}` : 'Not chosen']]} />}
+    {receipt && <Facts items={[['Expense date', formatDate(docDate(receipt))], ['Amount', formatMoney(docAmount(receipt) ?? 0)], ['Receipt reference', docNumber(receipt)], ['Account', account ? `${account.code} · ${account.name}` : 'Not chosen']]} />}
     <blockquote className="statement"><span>Employee’s stated purpose</span>{claim.employeePurpose || '(none given)'}</blockquote>
     <section className="block"><h3>Standard description</h3><p>{claim.standardizedDescription || '—'}</p></section>
     {claim.status === 'REJECTED' && claim.decision && <p className="note-warn"><strong>Rejected</strong> {formatTimestamp(claim.decision.at)}{claim.decision.reason ? ` — ${claim.decision.reason}` : ''}</p>}

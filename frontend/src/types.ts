@@ -8,7 +8,7 @@ export type DocType =
   | 'quotation' | 'purchase_order' | 'delivery_order' | 'invoice'
   | 'payment_advice' | 'payment_receipt' | 'claim_receipt' | 'unclassified';
 
-export type DocStatus = 'UPLOADED' | 'EXTRACTED' | 'MATCHED' | 'NEEDS_REVIEW' | 'VERIFIED' | 'REJECTED' | 'PROCESSING' | 'NEEDS_CONFIGURATION' | 'FAILED';
+export type DocStatus = 'UPLOADED' | 'EXTRACTED' | 'MATCHED' | 'NEEDS_REVIEW' | 'VERIFIED' | 'REJECTED';
 
 export type FieldKind = 'text' | 'date' | 'money';
 
@@ -19,7 +19,6 @@ export interface Field {
   value: string;      // text / ISO date; money fields keep their display-free decimal in `sen`
   sen?: number;
   confidence?: number; // 0..1 from the (dummy) Docs Agent
-  sourceRefs?: SourceRef[];
 }
 
 export interface LineItem {
@@ -43,15 +42,7 @@ export interface DocRecord {
   uploadedAt: string;
   uploadedBy: string;
   note?: string;
-  rawStatus?: string;
-  sourceRefs?: SourceRef[];
-  agentResults?: Record<string, { status?: string; summary?: string; data?: Record<string, unknown> }>;
-  inputVersion?: number;
-  analysisVersion?: number;
-  purpose?: string;
 }
-
-export interface SourceRef { documentId?: string; page?: number; row?: number; line?: number; field?: string; quote?: string; kind?: string }
 
 export type LinkState = 'confirmed' | 'proposed';
 
@@ -61,7 +52,7 @@ export interface DocLink {
   sourceId: string;
   targetId: string;          // the PO document (or an invoice, for payments)
   relationship: 'for_po' | 'settles_invoice';
-  confidence: number | null;
+  confidence: number;
   confirmedBy: string | null;
 }
 
@@ -107,27 +98,6 @@ export interface Issue {
   evidence: EvidenceRow[];
   createdAt: string;
   resolution?: string;
-  sourceRefs?: SourceRef[];
-  rawStatus?: string;
-}
-
-export interface IntakeJob {
-  id: string;
-  documentId: string;
-  status: 'queued' | 'processing' | 'completed' | 'needs_review' | 'needs_configuration' | 'failed' | string;
-  events: { eventId?: string; event_id?: string; timestamp?: string; createdAt?: string; agent?: string; state?: string; summary?: string; payload?: Record<string, unknown> }[];
-  inputVersion?: number;
-  runId?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  error?: { code?: string; message?: string } | null;
-  summary?: string;
-}
-
-export interface WorkspaceMasterData {
-  chartOfAccounts: { code: string; label?: string; name?: string; active?: boolean }[];
-  suppliers: { id?: string; legalName: string; registrationNumber?: string; active?: boolean }[];
-  buyerProfile: { legalName: string; registrationNumber?: string } | null;
 }
 
 export interface AuditEntry {
