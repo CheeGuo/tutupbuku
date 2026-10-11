@@ -1,0 +1,7 @@
+invoice_no,date,customer,amount,payment_method
+INV-0910,2026-09-09,Hui Kee Trading,282.10,transfer
+INV-0911,2026-09-11,Walk-in customer,150.00,cash
+INV-0912,2026-09-16,Tan Bros Renovation,1850.00,transfer
+INV-0913,2026-09-18,Walk-in customer,75.00,cash
+INV-0914,2026-09-19,Sim Furniture,975.50,transfer
+INV-0915,2026-09-17,Tan Construction,1850.00,transfer

@@ -1,81 +1,73 @@
-# TutupBuku Agentic Document Intake
+# TutupBuku: agentic month-end review
 
-TutupBuku accepts purchasing documents and employee claim receipts, extracts evidence, runs bounded parallel checks, and saves a reviewable proposal. It does not post transactions to accounting software. A person resolves findings and approves each record.
+One prompt in, one review pack out. The operator asks for the month-end review; TutupBuku validates the
+supplied records, proposes conservative matches, asks about the one thing it cannot settle, and exports
+five source-linked files. It prepares a review pack, not a completed accounting close.
 
-## What is implemented
+## How a run works
 
-- Automatic Master Agent routing into purchasing or employee claims; operators can also select a workflow manually. Purchasing intake supports quotations, purchase orders, delivery orders, invoices, payment advice, and receipts. Later documents can be linked to an existing PO even when uploads arrive out of order.
-- Supplier and buyer identity checks, missing-step and duplicate checks, unit-price comparisons, and cumulative PO amount/quantity guards. Partial invoices are allowed; combined consumption above the PO is held for review.
-- Claims intake with purpose verification. A fuel receipt paired with a lunch purpose is flagged and held before category recommendation or description writing.
-- Three independent parallel account-category recommendations, limited to active codes from the configured business chart of accounts.
-- Source references, human corrections, issue resolutions, approval events, business scoping, duplicate detection, progress events, and CSV export.
-- Nine executable role skills loaded from `./skills`.
-- Local JSON storage for development; Supabase Auth, Postgres, and private Storage for production. AWS ECS packaging is included.
+`inspect -> validate -> match -> review -> export`
 
-The agents propose and explain. Application code checks required values, arithmetic, master data, PO balances, approval state, and tenant access. Agent processing never approves a document.
+- The deterministic engine (`tutupbuku/engine.py`) does every number: integer-sen arithmetic, bank-balance
+  check, exact-amount matching within +-7 days, duplicate and missing-receipt flags, exports.
+- The agents run as a main agent with sub-agents (`tutupbuku/agents.py`). Each is a separate
+  CodeBuddy call through the gateway, with its own conversation and only its own skill:
+  1. **Main agent (plan)**: reads the engine results and picks up to 3 sub-agents, each with a task.
+  2. **Sub-agents** (for example `docs-agent`, `verify-audit-agent`): each sees only the evidence it
+     needs and returns the shared-contract JSON. They run one after another by default, because the
+     CodeBuddy gateway in use puts every call in the same session (parallel calls mixed replies in a
+     real run). Set `TUTUPBUKU_PARALLEL_SUB_AGENTS=1` only for a gateway that isolates sessions.
+  3. **Main agent (join)**: reads the validated results and decides `ask_human` or `export`.
 
-## Run locally
+  The backend controls the flow: allow-listed sub-agents only, at most 5 calls per run, every reply
+  schema-checked and size-capped, failed sub-agents reported as "not performed", and the human gate
+  enforced by code even if the main agent says export. Agents never change an engine number or match.
+  If the gateway is not configured or unreachable the run says so and continues with the engine only.
+  Every agent call is audited (prompt SHA-256, raw reply, timing, session, tool use) in
+  `.tutupbuku-job-state/agent_calls/` and at `GET /api/execution/audit?run_id=`. A reply that used a tool
+  is discarded; the agent phase has a deadline and an hourly run limit.
 
-Requires Node.js 22 or newer. The app uses Node built-ins and does not require npm packages.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for diagrams of the whole backend.
+- When a bank row has several exact candidates (row 41 in the demo) the run pauses at `waiting_for_input`.
+  The operator's answer is saved, the pack is rebuilt from saved state, then the run completes.
 
-Start the API from the repository root:
-
-```powershell
-Copy-Item .env.example .env
-node --env-file=.env src/server.js
-```
-
-In a second terminal, run the frontend:
-
-```powershell
-Set-Location frontend
-npm install
-npm run dev
-```
-
-Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` to the Node service on port 3000. To serve the app from port 3000, build it with `npm run build` from `frontend` first. Local development sign-in asks only for an email and is not suitable for a shared or public deployment. Local data is written to `.tutupbuku-data/state.json` and `.tutupbuku-data/uploads/`; other existing files in that folder are left alone. This directory is ignored by Git.
-
-CSV, TSV, and text files work without system OCR tools. PDF and image OCR requires Poppler and Tesseract. Set `OCR_LANGUAGES=eng+msa` when Malay trained data is installed; the Docker image includes English and Malay language data and uses both by default.
-
-Set `AI_BASE_URL` and `AI_MODEL` to enable agent calls. `AI_API_KEY` is optional for an endpoint that does not require a key. The provider must accept OpenAI-compatible `/chat/completions` requests and structured JSON output. Without a configured endpoint, uploads are saved but remain `needs_configuration`; they are not marked analyzed.
-
-The accounting workflow adapter does not connect to WorkBuddy desktop credit balances. Use only a documented API endpoint you are authorized to call. A local Ollama-compatible endpoint can be used without buying hosted model credits, subject to your laptop's capacity. If you tunnel a local server with ngrok for development, keep the URL private, require authentication, and do not treat the tunnel as production hosting.
-
-## Test the website connection to CodeBuddy on AWS
-
-A separate HTML page provides a **Run AWS agent test** button. Its authenticated backend sends one fixed request through the documented CodeBuddy CLI HTTP API and displays a confirmed final `AWS_BUDDY_OK` reply. Page loading and status checks do not call the model. The CodeBuddy gateway password stays on the backend; browser access uses a different operator password.
-
-See [Ubuntu/AWS connection demo setup](docs/agent-connection-demo.md) for exact commands. The demo runs on port 3001, with a dedicated tool-free CodeBuddy gateway on loopback port 8081 and an ngrok HTTPS endpoint. It uses the existing CLI account login rather than a separate model API key. Its purpose is to test the connection; it does not connect the accounting workflows or demonstrate parallel agents. Existing accounting permissions and approval behavior are unchanged.
-
-Live AWS, public HTTPS, and credit consumption through this new button still require verification on your VM. Automated tests use a mock gateway and do not spend credits.
-
-## Check the implementation
+## Run it
 
 ```powershell
-node --test
-$files = Get-ChildItem -Path src,public,scripts,test -Recurse -Filter *.js
-foreach ($file in $files) { node --check $file.FullName; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
-node scripts/smoke.js
+python scripts/generate_fixtures.py          # only if fixtures/Sept2026 is missing (synthetic data)
+Set-Location frontend; npm install; npm run build; Set-Location ..
+python -m tutupbuku.app --frontend --web-only   # UI and API on http://127.0.0.1:8765
 ```
 
-These commands work without installing npm packages. The smoke test uses temporary local storage, makes no model/network-provider call, uploads a text fixture, and verifies that missing AI configuration remains visible. It removes only its own temporary directory. Convenience npm scripts are also provided if the npm CLI is installed correctly.
+For UI development run `npm run dev` in `frontend/` (port 5173, proxies `/api` to 8765).
 
-## Production setup
+Copy `workbuddy.env.example` to `.env` and fill in `CODEBUDDY_GATEWAY_URL` (the ngrok URL of the VM's
+CodeBuddy gateway) and `CODEBUDDY_GATEWAY_PASSWORD` to enable the agent step. `python test_workbuddy.py`
+sends one test message through the same gateway. Each call uses credits.
 
-Production requires `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`. The service-role key stays server-side and must be stored as a Secrets Manager secret in ECS. Apply `supabase/migrations/001_agentic_intake.sql` and then `supabase/migrations/002_review_and_versioning.sql` to a new Supabase project before starting the service; review the migrations and backup policy with your database owner. Create a Supabase Auth user or enable permitted email signup. See [AWS deployment notes](infra/aws/README.md).
+Use the Windows Python (`py -3.13`) for anything that calls the gateway: the MSYS2 Python on this machine
+has no up-to-date CA store and fails TLS verification on the ngrok certificate.
 
-Membership roles are `owner`, `reviewer`, and `employee`. An employee can upload and see only their own claims; a reviewer or owner can resolve findings and approve. Only owners can edit company reference data. To add a registered Supabase Auth user, a project administrator must insert that user's Auth UUID and the target business UUID into `public.business_memberships` with the chosen role. Membership administration/invitations are not exposed in the app yet. Local development sign-in creates isolated owner-only workspaces.
+`py -3.13 scripts/eval_agents.py --runs 3` runs the real agent flow three times on fresh copies of the
+baseline and reports the results as counts (about 5 gateway calls per run).
 
-After creating the user in Supabase Auth, get both UUIDs from the Supabase dashboard, then run this reviewed SQL in the project SQL editor:
+## API used by the frontend
 
-```sql
-insert into public.business_memberships (business_id, user_id, role)
-values ('<business-uuid>', '<auth-user-uuid>', 'employee')
-on conflict (business_id, user_id) do update set role = excluded.role;
+| Route | Purpose |
+| --- | --- |
+| `GET /api/cases`, `GET /api/case?case_id=` | Available cases and the source manifest |
+| `POST /api/execution` | Start a run: `{case_id, goal, request_id}` |
+| `GET /api/execution[?run_id=]` | Poll the run (stages, events, question, pack) |
+| `POST /api/execution/continue` | Answer the question: `{run_id, expected_version, candidate_id, answer, leave_open}` |
+| `GET /api/exports/<file>`, `GET /api/source/<path>` | Download a pack file or open a source file |
+
+The lower-level routes (`/api/run`, `/api/decisions`, `/api/build-review-pack`, ...) and the MCP tools
+remain for WorkBuddy and tests.
+
+## Tests
+
+```powershell
+python -m unittest tests.test_engine tests.test_exports tests.test_mcp_protocol tests.test_mcp_tools tests.test_web_flow tests.test_workbuddy_client tests.test_workbuddy_skill tests.test_execution tests.test_execution_gateway
 ```
 
-The Supabase migration has been authored but not applied or tested against a live project in this workspace. Likewise, no AWS resources have been created by this implementation. Provide the AI endpoint/model/key as environment configuration or ECS secrets if you want cloud-model processing; that can incur provider charges. The production accounting workflow does not currently provide a WorkBuddy-credits API bridge; the separate connection demo above is limited to one fixed test request.
-
-## Data and operational limits
-
-Uploads are capped at 15 MiB. PDF text extraction checks up to 30 pages; OCR content truncation creates a review finding. The service records originals and derived data in private storage and tenant-scoped tables. Configure Supabase backups, retention, region, access controls, and production monitoring before using real accounting records. Exports are CSV drafts for downstream review, not approved journal postings.
+All data is synthetic. See `TutupBuku — Agentic Month-End Close for SMEs (v3).md` for the full spec.

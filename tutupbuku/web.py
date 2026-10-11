@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .engine import InputValidationError
+from .execution import ExecutionError, ExecutionManager
 from .models import MAX_UPLOAD_BYTES, SUPPORTED_RECEIPT_SUFFIXES, SUPPORTED_ROOT_FILES
 from .service import TutupBukuService
 from .workbuddy import AgentReviewJobs, WorkBuddyError
@@ -43,6 +44,8 @@ def create_server(
     *,
     api_token: str | None = None,
     agent_jobs: AgentReviewJobs | None = None,
+    executions: ExecutionManager | None = None,
+    frontend_dist: Path | None = None,
 ) -> ThreadingHTTPServer:
     """Create the loopback server; an optional bearer token protects tunneled API calls."""
     if host != "127.0.0.1":
@@ -146,10 +149,29 @@ def create_server(
                 return
             query = parse_qs(parsed.query, keep_blank_values=True)
             try:
-                if parsed.path in {"/", "/index.html"}:
+                if frontend_dist is not None and not parsed.path.startswith("/api/"):
+                    self._frontend(parsed.path)
+                elif parsed.path in {"/", "/index.html"}:
                     self._static("index.html")
                 elif parsed.path in {"/styles.css", "/app.js"}:
                     self._static(parsed.path.lstrip("/"))
+                elif parsed.path == "/api/execution/audit":
+                    run_id = query.get("run_id", [None])[0]
+                    audit = executions.audit(run_id) if executions is not None and run_id else None
+                    if audit is None:
+                        self._error(HTTPStatus.NOT_FOUND, "run not found")
+                        return
+                    self._send_json(HTTPStatus.OK, audit)
+                elif parsed.path == "/api/execution":
+                    if executions is None:
+                        self._error(HTTPStatus.SERVICE_UNAVAILABLE, "execution service is not configured")
+                        return
+                    run_id = query.get("run_id", [None])[0]
+                    run = executions.current(run_id)
+                    if run_id and run is None:
+                        self._error(HTTPStatus.NOT_FOUND, "run not found")
+                        return
+                    self._send_json(HTTPStatus.OK, {"run": run})
                 elif parsed.path == "/api/health":
                     self._send_json(HTTPStatus.OK, {
                         "status": "ok",
@@ -217,7 +239,18 @@ def create_server(
             try:
                 payload = self._read_json()
                 case_id = self._case_id({}, payload)
-                if parsed.path == "/api/run":
+                if parsed.path in {"/api/execution", "/api/execution/continue"}:
+                    if executions is None:
+                        self._error(HTTPStatus.SERVICE_UNAVAILABLE, "execution service is not configured")
+                        return
+                    if parsed.path == "/api/execution":
+                        self._check_keys(payload, {"case_id", "goal", "request_id"})
+                        run = executions.start(case_id, payload.get("goal"), payload.get("request_id"))
+                    else:
+                        self._check_keys(payload, {"run_id", "expected_version", "candidate_id", "answer", "leave_open"})
+                        run = executions.resume(payload.get("run_id"), payload.get("expected_version"), payload.get("candidate_id"), payload.get("answer"), payload.get("leave_open"))
+                    self._send_json(HTTPStatus.ACCEPTED, {"run": run})
+                elif parsed.path == "/api/run":
                     self._require_no_active_job()
                     self._check_keys(payload, {"case_id"})
                     self._send_json(HTTPStatus.OK, service.run_matching(case_id))
@@ -253,6 +286,8 @@ def create_server(
                     self._error(HTTPStatus.NOT_FOUND, "route not found")
             except OverflowError as exc:
                 self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
+            except ExecutionError as exc:
+                self._error(exc.status, str(exc))
             except WorkBuddyError as exc:
                 status = HTTPStatus.SERVICE_UNAVAILABLE if exc.code == "GATEWAY_NOT_CONFIGURED" else HTTPStatus.CONFLICT if exc.code in {"JOB_ALREADY_ACTIVE", "IDEMPOTENCY_KEY_CONFLICT"} else HTTPStatus.TOO_MANY_REQUESTS if exc.code == "RATE_LIMITED" else HTTPStatus.BAD_REQUEST
                 self._error(status, str(exc))
@@ -341,6 +376,42 @@ def create_server(
             unknown = sorted(set(payload) - allowed)
             if unknown:
                 raise ValueError("unexpected request field(s): " + ", ".join(unknown))
+
+        def _frontend(self, request_path: str) -> None:
+            """Serve the built React app; unknown non-file paths fall back to index.html (client routing)."""
+            root = frontend_dist.resolve()
+            try:
+                requested = unquote(request_path).lstrip("/") or "index.html"
+            except ValueError:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid path")
+                return
+            target = (root / requested).resolve()
+            if not target.is_relative_to(root):
+                self._error(HTTPStatus.NOT_FOUND, "not found")
+                return
+            if not target.is_file():
+                if Path(requested).suffix:
+                    self._error(HTTPStatus.NOT_FOUND, "frontend asset not found; build the frontend first")
+                    return
+                target = root / "index.html"
+            if not target.is_file():
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "frontend build not found; run npm run build in the frontend folder")
+                return
+            content = target.read_bytes()
+            content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            if target.suffix in {".html", ".css", ".js", ".mjs", ".svg"}:
+                content_type += "; charset=utf-8"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            # React sets inline style attributes, so the frontend needs 'unsafe-inline' for styles only.
+            self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+            self.send_header("Cache-Control", "no-cache" if target.suffix == ".html" else "public, max-age=3600")
+            self.end_headers()
+            self.wfile.write(content)
 
         def _static(self, filename: str) -> None:
             if filename not in STATIC_NAMES:

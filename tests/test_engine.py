@@ -13,7 +13,7 @@ from tutupbuku.engine import InputValidationError, ReviewEngine, format_sen, par
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = PROJECT_ROOT / "fixtures" / "Sept2026"
+FIXTURE = PROJECT_ROOT / "demo-fixtures" / "Sept2026"  # clean baseline, never the live working copy
 
 
 class ReviewEngineTests(unittest.TestCase):

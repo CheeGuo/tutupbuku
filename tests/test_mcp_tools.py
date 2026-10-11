@@ -12,7 +12,7 @@ from tutupbuku.service import TutupBukuService
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = PROJECT_ROOT / "fixtures" / "Sept2026"
+FIXTURE = PROJECT_ROOT / "demo-fixtures" / "Sept2026"  # clean baseline, never the live working copy
 EXPECTED_TOOLS = {
     "health_check",
     "list_cases",

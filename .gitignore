@@ -11,3 +11,9 @@ __pycache__/
 .dist/
 .superpowers/
 .tutupbuku-job-state/
+
+# generated at run time
+review_pack_*/
+.tutupbuku-job-state/
+frontend/dist/
+frontend/node_modules/

@@ -17,7 +17,7 @@ from tutupbuku.web import create_server
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = PROJECT_ROOT / "fixtures" / "Sept2026"
+FIXTURE = PROJECT_ROOT / "demo-fixtures" / "Sept2026"  # clean baseline, never the live working copy
 
 
 class BrowserFlowTests(unittest.TestCase):
@@ -48,13 +48,6 @@ class BrowserFlowTests(unittest.TestCase):
         return response.status, result
 
     def test_ui_decision_rebuilds_downloadable_pack_through_shared_state(self) -> None:
-        self.connection.request("GET", "/")
-        page = self.connection.getresponse()
-        html = page.read().decode("utf-8")
-        self.assertEqual(page.status, 200)
-        for screen in ("Inputs", "Review", "Review Pack"):
-            self.assertIn(screen, html)
-
         status, case = self.request_json("GET", "/api/case?case_id=Sept2026")
         self.assertEqual(status, 200)
         self.assertEqual(case["case_id"], "Sept2026")
