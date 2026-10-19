@@ -1,4 +1,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { request } from './worker-request';
+
+export { request };
 
 export type Source = { path: string; sha256: string; size_bytes: number; processing: string };
 export type CaseSummary = { case_id: string; business_name: string; period_start: string | null; period_end: string | null; status?: string };
@@ -32,14 +35,6 @@ export const OUTPUTS: Record<string, [string, string]> = {
   '04_decisions_log.csv': ['Decision log', 'Operator answers recorded during review'],
   '05_manifest.csv': ['Evidence manifest', 'Source files and their SHA-256 hashes'],
 };
-export async function request<T>(url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, { method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined, signal });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.error || `Service request failed (${response.status}).`);
-  }
-  return response.json();
-}
 export const sourceUrl = (caseId: string, path: string) => `/api/source/${encodeURIComponent(path.split('#')[0])}?case_id=${encodeURIComponent(caseId)}`;
 export const stageLabel = (state: string) => ({ queued: 'Queued', running: 'Running', completed: 'Done', waiting: 'Needs your answer', waiting_for_input: 'Waiting for your answer', failed: 'Stopped' }[state] || state);
 

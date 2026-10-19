@@ -185,3 +185,38 @@ model WorkspaceMeta {
 
   @@map("workspace_meta")
 }
+
+/// One fenced worker lease and its recoverable runtime files per workspace.
+model DaemonWorkspace {
+  workspace  String          @id
+  owner      String?
+  leaseUntil DateTime        @default(now()) @map("lease_until") @db.Timestamptz(6)
+  ready      Boolean         @default(false)
+  snapshot   Json            @default("{}")
+  updatedAt  DateTime        @default(now()) @map("updated_at") @db.Timestamptz(6)
+  commands   DaemonCommand[]
+
+  @@map("daemon_workspaces")
+}
+
+/// Accepted browser work, its idempotency fingerprint, and confirmed response.
+model DaemonCommand {
+  id          String          @id
+  workspace   String
+  method      String
+  path        String
+  payload     Json?
+  headers     Json            @default("{}")
+  requestKey  String?         @map("request_key")
+  fingerprint String
+  status      String          @default("queued")
+  owner       String?
+  response    Json?
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  finishedAt  DateTime?       @map("finished_at") @db.Timestamptz(6)
+  workspaceRow DaemonWorkspace @relation(fields: [workspace], references: [workspace], onDelete: Cascade)
+
+  @@unique([workspace, requestKey])
+  @@index([workspace, status, createdAt], map: "daemon_commands_pending")
+  @@map("daemon_commands")
+}

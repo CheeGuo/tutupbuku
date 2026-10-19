@@ -6,6 +6,7 @@ import { DEMO_STAGES, STARTERS, useAgent } from '../lib/agent';
 import { HumanCheckpoint } from '../components/ExecutionReview';
 import { ChatMessage } from '../components/ChatCards';
 import { Orbit, OrbitMode, OrbitNode } from '../components/Orbit';
+import { requestFile } from '../lib/worker-request';
 
 const SHORT = ['Inspect', 'Validate', 'Match', 'Review', 'Export'];
 const ICONS: OrbitNode['icon'][] = ['document', 'filter', 'link', 'person', 'arrow'];
@@ -100,7 +101,7 @@ export function Execution() {
     const controller = new AbortController(); previewRequest.current = controller;
     setPreviewPending(true); setReportPreview(null);
     try {
-      const response = await fetch(`/api/exports/${encodeURIComponent(file)}?case_id=${encodeURIComponent(run.case_id)}&run_id=${run.id}`, { signal: controller.signal });
+      const response = await requestFile(`/api/exports/${encodeURIComponent(file)}?case_id=${encodeURIComponent(run.case_id)}&run_id=${run.id}`, controller.signal);
       if (!response.ok) { const detail = await response.json().catch(() => ({})); throw new Error(detail.error || 'Report preview is unavailable.'); }
       const text = await response.text();
       if (!controller.signal.aborted) setReportPreview({ file, text });

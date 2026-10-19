@@ -5,6 +5,7 @@ import { allocIds, useData } from '../state/store';
 import { TYPE_CONFIG, chainOf, docAmount, docDate, docNumber, docParty, field, fieldDisplay, lineTotal, poIdOf, repriceInvoice } from './docs';
 import { formatDate, formatMoney, humanStatus } from './format';
 import { checkInvoice, type Comparison, type IssueDraft } from './verify';
+import { request } from './worker-request';
 
 /* Demo agent for the claim and purchasing workflows in Live Execution.
    NOT connected to a backend or OCR: file reading uses PREPARED sample extractions (disclosed in the chat).
@@ -123,11 +124,8 @@ export async function readDocument(file: File): Promise<ReadResult> {
     const bytes = new Uint8Array(await file.arrayBuffer());
     let binary = '';
     for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    const response = await fetch('/api/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: file.name, content_base64: btoa(binary) }) });
-    const body = await response.json().catch(() => null);
-    if (!body) return { ok: false, error: 'the backend is not running' };
-    if (!response.ok) return { ok: false, error: body.error || `service error ${response.status}` };
-    return { ok: true, doc: body as ReadDocument };
+    const doc = await request<ReadDocument>('/api/extract', { filename: file.name, content_base64: btoa(binary) });
+    return { ok: true, doc };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
@@ -148,11 +146,9 @@ async function runCouncil(employee: string, purpose: string, receipt: DocRecord)
   const claim = { employee, purpose, receipt: { merchant: docParty(receipt), date: docDate(receipt), total_myr: money(docAmount(receipt)), tax_myr: money(field(receipt, 'tax')?.sen ?? null), reference: docNumber(receipt),
     items: receipt.lines.map(l => ({ description: l.description, quantity: l.quantity, total_myr: money(l.totalSen) })) } };
   try {
-    const response = await fetch('/api/claims/council', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ claim, accounts: CHART_OF_ACCOUNTS }) });
-    const body = await response.json().catch(() => null);
-    if (!body) return { ok: false, error: 'the backend is not running' };
-    if (!response.ok) return { ok: false, error: body.error || `service error ${response.status}` };
-    return { ok: true, result: body as CouncilResult };
+    const result = await request<CouncilResult>('/api/claims/council', { claim, accounts: CHART_OF_ACCOUNTS });
+    if (!result || !Array.isArray(result.opinions) || !result.chair) return { ok: false, error: 'the service returned an invalid council response' };
+    return { ok: true, result };
   } catch (e) { return { ok: false, error: (e as Error).message }; }
 }
 
@@ -590,12 +586,11 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     void (async () => {
       setBusy(true); setStages(DEMO_STAGES.map((_, i) => (i === 0 ? 'running' : 'queued'))); touch();
       try {
-        const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: clean, history }) });
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) { say(`The WorkBuddy agent could not answer: ${body.error || `service error ${response.status}`}.`); return; }
+        const body = await request<{ reply?: unknown }>('/api/chat', { message: clean, history });
+        if (typeof body?.reply !== 'string' || !body.reply.trim()) throw new Error('The WorkBuddy agent returned an empty or invalid reply.');
         say(body.reply);
-      } catch {
-        say('The review service is offline, so the WorkBuddy agent could not be reached. Start the Python service and try again.');
+      } catch (error) {
+        say(`The WorkBuddy agent could not answer: ${error instanceof Error ? error.message : 'The service is unavailable.'}`);
       } finally { setStages(DEMO_STAGES.map(() => 'queued')); setBusy(false); touch(); }
     })();
   }, [add, busy, run, say]);

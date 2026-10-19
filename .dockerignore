@@ -1,0 +1,33 @@
+# Deny by default. Only these application sources enter the build context.
+**
+!Dockerfile
+!pyproject.toml
+!tutupbuku/
+!tutupbuku/**
+!skills/
+!skills/**
+!.codebuddy/
+!.codebuddy/skills/
+!.codebuddy/skills/tutupbuku/
+!.codebuddy/skills/tutupbuku/SKILL.md
+!demo-fixtures/
+!demo-fixtures/**
+!prisma/
+!prisma/daemon.sql
+
+# Defense in depth if a local/generated file appears under an allowed folder.
+**/.env
+**/.env.*
+**/.git
+**/.git/**
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/node_modules/
+**/.dist/
+**/.tutupbuku-*/
+**/fixtures/
+**/review_pack_*/
+**/run_state.json
+!demo-fixtures/**/run_state.json
+**/*.log

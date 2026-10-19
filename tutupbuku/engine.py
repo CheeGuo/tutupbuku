@@ -69,13 +69,14 @@ class ReviewEngine:
     Inputs are only read here; explicit UI uploads are the only write path.
     """
 
-    def __init__(self, case_dir: Path, output_root: Path, case_id: str | None = None) -> None:
+    def __init__(self, case_dir: Path, output_root: Path, case_id: str | None = None, *, persist_input_state: bool = True) -> None:
         self.storage = CaseStorage(Path(case_dir))
         self.case_dir = self.storage.case_dir
         self.output_root = Path(output_root).resolve()
         self.case_id = case_id or self.case_dir.name
         self._lock = threading.RLock()
         self._state = self.storage.load_state()
+        self.persist_input_state = persist_input_state
         self._validated_data: dict[str, Any] = {}
         self._input_change_pending = self._sync_input_hashes()
 
@@ -95,7 +96,8 @@ class ReviewEngine:
             self._state["source_hashes"] = current
             self._state["last_matching"] = None
             self._state.pop("built_pack_signature", None)
-            self.storage.save_state(self._state)
+            if self.persist_input_state:
+                self.storage.save_state(self._state)
             return False
         if current == previous:
             return False
@@ -108,7 +110,8 @@ class ReviewEngine:
             if not image_hash or fields.get("source_sha256") != image_hash:
                 self._state["receipt_fields"].pop(receipt_id, None)
         self._state["source_hashes"] = current
-        self.storage.save_state(self._state)
+        if self.persist_input_state:
+            self.storage.save_state(self._state)
         return True
 
     def _receipt_path_for_id(self, receipt_id: str) -> str | None:

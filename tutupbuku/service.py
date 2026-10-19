@@ -14,9 +14,11 @@ from .models import SUPPORTED_RECEIPT_SUFFIXES, SUPPORTED_ROOT_FILES
 
 
 class TutupBukuService:
-    def __init__(self, project_root: Path, default_case_id: str = "Sept2026") -> None:
+    def __init__(self, project_root: Path, default_case_id: str = "Sept2026", *,
+                 fixtures_root: Path | None = None, persist_input_state: bool = True) -> None:
         self.project_root = Path(project_root).resolve()
-        self.fixtures_root = (self.project_root / "fixtures").resolve()
+        self.fixtures_root = Path(fixtures_root or self.project_root / "fixtures").resolve()
+        self.persist_input_state = persist_input_state
         self.output_root = self.project_root
         self.default_case_id = default_case_id
         self._lock = threading.RLock()
@@ -36,7 +38,8 @@ class TutupBukuService:
         with self._lock:
             if case_id not in self._engines:
                 case_dir = self._resolve_case_dir(case_id)
-                self._engines[case_id] = ReviewEngine(case_dir, self.output_root, case_id)
+                self._engines[case_id] = ReviewEngine(case_dir, self.output_root, case_id,
+                                                    persist_input_state=self.persist_input_state)
             return self._engines[case_id]
 
     def list_cases(self) -> list[dict[str, Any]]:
